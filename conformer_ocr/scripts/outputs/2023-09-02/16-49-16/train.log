@@ -1,0 +1,5 @@
+[2023-09-02 16:49:19,730][timm.models._builder][INFO] - Loading pretrained weights from Hugging Face hub (timm/vgg19_bn.tv_in1k)
+[2023-09-02 16:49:19,945][timm.models._hub][INFO] - [timm/vgg19_bn.tv_in1k] Safe alternative available for 'pytorch_model.bin' (as 'model.safetensors'). Loading weights using safetensors.
+[2023-09-02 16:49:20,208][root][INFO] - It's running on CPU!
+[2023-09-02 16:49:20,211][root][INFO] - Start training ...
+[2023-09-02 16:49:20,215][root][ERROR] - /u01/vuh/datasets/OCR/label_ocr_v5_2_train.txt not exists. Please verify this!
