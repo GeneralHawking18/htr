@@ -197,11 +197,11 @@ class TransformerOCRCTC:
             if start_step % self.config.pl_params.pl_trainer.val_every_n_steps == 0:
                 val_info = self.validation()
 
-                if val_info['sentence accuracy'] > best_acc:
+                if val_info['word accuracy'] > best_acc:
                     saved_ckpt = os.path.join(self.config.pl_params.model_callbacks.dirpath,
                                               self.config.pl_params.model_callbacks.filename)
                     self.save_weights(saved_ckpt)
-                    best_acc = val_info['sentence accuracy']
+                    best_acc = val_info['word accuracy']
 
     def validation(self):
         self.model.eval()
