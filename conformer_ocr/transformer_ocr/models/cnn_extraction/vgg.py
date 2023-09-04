@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from timm.models import vgg
+import einops
 
 
 class Vgg(nn.Module):
@@ -31,18 +32,21 @@ class Vgg(nn.Module):
             net = vgg.vgg19_bn(pretrained=pretrained)
 
         pool_idx = 0
+        for param in net.parameters():
+            param.requires_grad = False
 
         for i, layer in enumerate(net.features):
             if isinstance(layer, torch.nn.MaxPool2d):
-                net.features[i] = torch.nn.AvgPool2d(kernel_size=list(kernel_pool[pool_idx]),
+                net.features[i] = torch.nn.MaxPool2d(kernel_size=list(kernel_pool[pool_idx]),
                                                      stride=list(stride_pool[pool_idx]),
                                                      padding=0)
                 pool_idx += 1
 
         self.features = net.features
         self.dropout = nn.Dropout(dropout_p)
+        # print(d_model)
         self.conv2d = nn.Conv2d(in_channels=512,
-                                out_channels=d_model,
+                                out_channels=d_model//2,
                                 kernel_size=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -51,13 +55,19 @@ class Vgg(nn.Module):
             - x: (n, C, H, W)
             - output: (t, n, c)
         """
+        
         conv = self.features(x)
         conv = self.dropout(conv)
         conv = self.conv2d(conv)
-
-        conv = conv.transpose(-1, -2)
+        # print("after conv: ", conv.shape)
+        conv = einops.rearrange(conv, "b c h w -> w b (c h)")
+        # print("rearrange einops: ", conv.shape)
+        """conv = conv.transpose(-1, -2)
+        print("Shape after transpose: ", conv.shape)
         conv = conv.flatten(2)
+        print("Flatten: ", conv.shape)
         conv = conv.permute(-1, 0, 1)
+        print("After permute: ", conv.shape)"""
         return conv
 
 

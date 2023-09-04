@@ -29,6 +29,8 @@ class PositionalEncoding(nn.Module):
         self.set_pe()
 
     def set_pe(self):
+        """if num_patches < self.max_len:
+            self.max_len """
         pe = torch.zeros(self.max_len, self.d_model)
         position = torch.arange(0, self.max_len, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, self.d_model, 2).float() *
@@ -41,8 +43,9 @@ class PositionalEncoding(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.scale:
             x = x * math.sqrt(self.d_model)
-
+        # print("input to positional embedding: ", x.shape)
         pos_emb = self.pe[:x.size(0), :]
+        # print("pos_emb :",pos_emb.shape)
         if self.dropout_emb:
             pos_emb = self._dropout_emb(pos_emb)
         x = x + pos_emb

@@ -19,13 +19,14 @@ class FeedForward(nn.Module):
 
     def __init__(self, d_model, d_feedforward, dropout, activation, layer_norm_eps=1e-5):
         super(FeedForward, self).__init__()
-        self.layer_norm = nn.LayerNorm(384, eps = 1e-5) # nn.LayerNorm(d_model, eps=layer_norm_eps)
+        self.layer_norm = nn.LayerNorm(d_model, eps=layer_norm_eps)
         self.linear1 = nn.Linear(d_model, d_feedforward)
         self.activation = activation
         self._dropout = nn.Dropout(p=dropout)
         self.linear2 = nn.Linear(d_feedforward, d_model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # print("input conformer module: ", x.shape)
         x = self.layer_norm(x)
         x = self.linear1(x)
         x = self.activation(x)
