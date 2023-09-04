@@ -82,7 +82,7 @@ class OCRDataset(Dataset):
             readahead=False,
             meminit=False)
         self.txn = self.env.begin(write=False)
-        print(self.txn.get('num-samples'.encode()))
+        # print(self.txn.get('num-samples'.encode()))
         dataset_size = int(self.txn.get('num-samples'.encode()))
         # dataset_size = 100000
         self.dataset_size = dataset_size
@@ -219,7 +219,7 @@ class OCRDataset(Dataset):
         img_path = os.path.join(self.root_dir, img_path)
 
         sample = {'img': img, 'sentence': sentence, 'img_path': img_path}
-        print("|{}|".format(sentence))
+        # print("|{}|".format(sentence))
         return sample
 
     def __len__(self):
@@ -332,25 +332,32 @@ class Collator(object):
             transform = ResizeNormalize((self.img_w, self.img_h))
             image_tensors = [transform(sample['img']) for sample in batch]
             image_tensors = torch.cat([t.unsqueeze(0) for t in image_tensors], 0)
-
+        
+        target_lens = []
+        
         for sample in batch:
             img_path.append(sample['img_path'])
             sentence = sample['sentence']
 
             sentence_len = len(sentence)
+            
+            target_lens.append(sentence_len)
             tgt = np.concatenate((
                 sentence,
                 np.zeros(max_label_len - sentence_len, dtype=np.int32)))
+            # print("tgt: ", tgt)
             tgt_input.append(tgt)
 
-        tgt_input = np.array(tgt_input, dtype=np.int64).T
+        tgt_input = np.array(tgt_input, dtype=np.int64)
 
         rs = {
             'img': image_tensors,
-            'tgt_output': torch.LongTensor(tgt_input.T),
-            'img_path': img_path
+            'tgt_output': torch.LongTensor(tgt_input),
+            'img_path': img_path,
+            'target_lens': torch.IntTensor(target_lens),
         }
-
+        # print("tgt_output shape: ", rs['tgt_output'].shape)
+        # print("target_len shape and value: ", rs['target_len'].shape, rs['target_lens'])
         return rs
 
 

@@ -1,0 +1,124 @@
+dataset:
+  dataset:
+    name: v6
+    train_annotation: /content/drive/MyDrive/HUST/ai_hackathon/ocr/htr/conformer_ocr/data/train.txt
+    valid_annotation: /content/drive/MyDrive/HUST/ai_hackathon/ocr/htr/conformer_ocr/data/val.txt
+    unchanged:
+      root_dir: /content/ocr/training_data/new_train
+      img_height: 32
+      img_width_min: 32
+      img_width_max: 1024
+      max_readers: 16
+  dataloader:
+    num_workers: 3
+    pin_memory: true
+  aug:
+    image_aug: true
+    masked_language_model: false
+model:
+  vocab: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚÝàáâãèéêìíòóôõùúýĂăĐđĨĩŨũƠơƯưẠạẢảẤấẦầẨẩẪẫẬậẮắẰằẲẳẴẵẶặẸẹẺẻẼẽẾếỀềỂểỄễỆệỈỉỊịỌọỎỏỐốỒồỔổỖỗỘộỚớỜờỞởỠỡỢợỤụỦủỨứỪừỬửỮữỰựỲỳỴỵỶỷỸỹ-
+  device: cuda:0
+  batch_size: 256
+  cnn_model: vgg19_bn
+  cnn_args:
+    pretrained: true
+    stride_pool:
+    - - 2
+      - 2
+    - - 2
+      - 2
+    - - 2
+      - 1
+    - - 2
+      - 1
+    - - 1
+      - 1
+    kernel_pool:
+    - - 2
+      - 2
+    - - 2
+      - 2
+    - - 2
+      - 1
+    - - 2
+      - 1
+    - - 1
+      - 1
+    hidden: 384
+    dropout: 0.5
+  transformer_type: conformer
+  transformer_args:
+    max_seq_length: 128
+    n_layers: 2
+    scale: true
+    d_model: 384
+    n_head: 4
+    d_feedforward: 1536
+    emb_dropout: 0.0
+    pos_dropout: 0.1
+    ff_dropout: 0.1
+    conv_dropout: 0.1
+    attn_dropout: 0.1
+    activation: swish
+    layer_norm_eps: 1.0e-05
+    self_attn_type: abs_pos
+    half_step_residual: true
+    conv_kernel_size: 3
+    conv_expansion_factor: 2
+optimizer:
+  optimizer:
+    type: adam
+    lr: 0.001
+    betas:
+    - 0.9
+    - 0.98
+    eps: 1.0e-09
+    weight_decay: 0
+    lr_mul: 2.0
+    n_warm_steps: 8000
+pl_params:
+  pl_trainer:
+    gpus:
+    - 0
+    - 1
+    max_epochs: 200
+    max_steps: 100000
+    num_nodes: 1
+    accelerator: dp
+    accumulate_grad_batches: 1
+    checkpoint_callback: true
+    log_every_n_steps: 10
+    val_every_n_steps: 500
+    val_check_interval: 0.5
+    detect_anomaly: true
+    check_val_every_n_epoch: 1
+    precision: 32
+    sync_batchnorm: false
+    benchmark: false
+    gradient_clip_val: 1.0
+    gradient_clip_algorithm: value
+  loss_func:
+    blank: 0
+    reduction: sum
+    zero_infinity: true
+  ctc_smoothing: 0.1
+  max_norm: 5.0
+  pretrained: null
+  use_beamsearch: true
+  predict: false
+  model_callbacks:
+    monitor: sentence accuracy
+    dirpath: ckpts
+    filename: dmec-{iter:02d}-{sentence accuracy:.2f}
+    save_top_k: 3
+    mode: max
+lm_models:
+  model_path: null
+  alpha: 0.0
+  beta: 0.0
+  cutoff_top_n: 40
+  cutoff_prob: 1.0
+  beam_width: 10
+  num_processes: 4
+  blank_id: 1
+  log_probs_input: false

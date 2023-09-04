@@ -118,15 +118,17 @@ class TransformerOCRCTC:
     def training_step(self, batch, step):
         img = batch['img'].cuda(non_blocking=True, device=self.device)
         tgt_output = batch['tgt_output'].cuda(non_blocking=True, device=self.device)
-        print("len gt and gt: ", len(tgt_output), tgt_output.shape)
+        # print("len gt and gt: ", len(tgt_output), tgt_output.shape)
+        
         a = self.convert_to_string(tgt_output[0], tgt_output.shape[0])
-        print("string and gt num", a, tgt_output[0])
+        # print("string and gt num", a, tgt_output[0])
         outputs = self.model(img)
         print("outputs prob shape: ", outputs.shape)
         outputs = F.log_softmax(outputs, dim=2)
         outputs = outputs.transpose(0, 1).requires_grad_()
         
-        length = torch.tensor([tgt_output.size(1)] * outputs.size(1), device=outputs.device).long()
+        # length = torch.tensor([tgt_output.size(1)] * outputs.size(1), device=outputs.device).long()
+        length = batch['target_lens']
         # print(length.shape)
         preds_size = torch.tensor([outputs.size(0)] * outputs.size(1), device=outputs.device).long()
 
@@ -251,7 +253,8 @@ class TransformerOCRCTC:
         logits = self.model(img)
         logits = F.log_softmax(logits, dim=2)
         outputs = logits.transpose(0, 1)
-        length = torch.tensor([tgt_output.size(1)] * outputs.size(1), device=outputs.device).long()
+        # length = torch.tensor([tgt_output.size(1)] * outputs.size(1), device=outputs.device).long()
+        length = batch['target_lens']
         preds_size = torch.tensor([outputs.size(0)] * outputs.size(1), device=outputs.device).long()
         loss = self.criterion(outputs, tgt_output, preds_size, length) / outputs.size(1)
 
