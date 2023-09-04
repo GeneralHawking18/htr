@@ -19,7 +19,7 @@ pl_trainer:
 
 loss_func:
   blank: 0 
-  reduction: sum
+  reduction: sum 
   zero_infinity: true
 
 ctc_smoothing: 0.1

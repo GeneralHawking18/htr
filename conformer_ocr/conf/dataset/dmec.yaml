@@ -9,7 +9,7 @@ dataset:
         # resize image to 32 height, larger height will increase accuracy
         img_height: 32
         img_width_min: 32
-        img_width_max: 1024
+        img_width_max: 128 
         max_readers: 16
 
 dataloader:

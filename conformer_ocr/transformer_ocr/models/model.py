@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
 from omegaconf import DictConfig, ListConfig
 from ctcdecode import CTCBeamDecoder
+from torchsummary import summary
 
 from transformer_ocr.core.optimizers import NaiveScheduler
 from transformer_ocr.utils.vocab import VocabBuilder
@@ -81,6 +82,8 @@ class TransformerOCRCTC:
             self.device = device
             self.model = self.model.to(self.device)
 
+        summary_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        summary(self.model, (3, 32, 128), device = summary_device)
         self.batch_size = config.model.batch_size
 
         self.ctc_decoder = CTCBeamDecoder(
@@ -120,7 +123,7 @@ class TransformerOCRCTC:
         tgt_output = batch['tgt_output'].cuda(non_blocking=True, device=self.device)
         # print("len gt and gt: ", len(tgt_output), tgt_output.shape)
         
-        a = self.convert_to_string(tgt_output[0], tgt_output.shape[0])
+        #a = self.convert_to_string(tgt_output[0], tgt_output.shape[0])
         # print("string and gt num", a, tgt_output[0])
         outputs = self.model(img)
         print("outputs prob shape: ", outputs.shape)
