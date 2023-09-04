@@ -126,7 +126,8 @@ class TransformerOCRCTC:
         #a = self.convert_to_string(tgt_output[0], tgt_output.shape[0])
         # print("string and gt num", a, tgt_output[0])
         outputs = self.model(img)
-        print("outputs prob shape: ", outputs.shape)
+        # print("outputs prob shape: ", outputs.shape)
+        
         outputs = F.log_softmax(outputs, dim=2)
         outputs = outputs.transpose(0, 1).requires_grad_()
         

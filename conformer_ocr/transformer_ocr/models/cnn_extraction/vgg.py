@@ -32,8 +32,8 @@ class Vgg(nn.Module):
             net = vgg.vgg19_bn(pretrained=pretrained)
 
         pool_idx = 0
-        for param in net.parameters():
-            param.requires_grad = False
+        """for param in net.parameters():
+            param.requires_grad = False"""
 
         for i, layer in enumerate(net.features):
             if isinstance(layer, torch.nn.MaxPool2d):
