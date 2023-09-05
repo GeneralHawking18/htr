@@ -119,9 +119,9 @@ class TransformerOCRCTC:
             self.valid_data = self.val_dataloader()
 
             self.criterion = nn.CTCLoss(**self.config.pl_params.loss_func)
-        else:
+        # else:
             
-            logging.info('Start predicting ...')
+            
             self.test_data = self.test_dataloader()
             
 
@@ -216,10 +216,9 @@ class TransformerOCRCTC:
                         total_loader_time,
                         total_gpu_time)"""
                     # reset
-            
             info = 'Epoch {}: train loss: {:.3f} - lr: {:.2e}'.format(
                 epoch,
-                total_loss / len(self.train_data)
+                total_loss / len(self.train_data),
                 self.optimizer.get_optimizer().param_groups[0]['lr'],
             )
             # total_loader_time = 0
@@ -237,7 +236,12 @@ class TransformerOCRCTC:
             if val_info['cer'] < self.best_ckpt[1]:
                 saved_ckpt = os.path.join(
                     self.config.pl_params.model_callbacks.dirpath,
-                    self.config.pl_params.model_callbacks.filename.format()
+                    "{}_{}_{}.pth".format(
+                        self.model.__class__.__name__, 
+                        epoch, 
+                        round(val_info['cer'], 4),
+                    ) 
+                    # self.config.pl_params.model_callbacks.filename.format()
                 )
                 self.save_weights(saved_ckpt)
                 self.best_ckpt = (saved_ckpt, val_info['cer'])
@@ -324,26 +328,32 @@ class TransformerOCRCTC:
         return pred_sent
     
     def export_submission(self):
+        logging.info('Start predicting ...')
         # Load the best weight to submit
         self.load_weights(self.best_ckpt[0])
 
         model_name = self.model.__class__.__name__
-        file_zip_path = f"./outputs/{model_name}_{self.best_ckpt[1]}.zip"
+        best_cer_val = round(self.best_ckpt[1], 4)
+        file_zip_path = f"./outputs/{model_name}_{best_cer_val}.zip"
         zip_buffer = io.BytesIO()
-        zip_file = zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED, False)
-        data = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED, False) as zip_file:
+            data = io.BytesIO()
 
-        for batch in tqdm(self.test_loader, desc = "Testing: "):
-            self.model.eval()
-            img_names, imgs = batch
-            preds = self.predict(imgs)
+            for batch in tqdm(self.test_data, desc = "Testing: "):
+                self.model.eval()
+                img_names, imgs = batch
+                preds = []
+                for img in imgs:
+                    pred = self.predict(img)
+                    preds.append(pred)
 
-            for img_name, pred in zip(img_names, preds):
-                if pred == "":
-                    pred = "a"
-                data.write(f"{img_name} {pred}\n")
+                for img_name, pred in zip(img_names, preds):
+                    if pred == "":
+                        pred = "a"
+                    line = bytes(f"{img_name} {pred}\n", "utf=8")
+                    data.write(line)
 
-        zip_file.writestr("submission.txt", data.getvalue())
+            zip_file.writestr("submission.txt", data.getvalue())
 
         # Store file
         with open(file_zip_path, 'wb') as f:
@@ -371,8 +381,8 @@ class TransformerOCRCTC:
 
     def test_dataloader(self) -> DataLoader:
         dataset = Test_OCRDataset(
-            test_img_dir = self.config.dataset.test_img_dir,
-            transform = self.transform            
+            test_imgs_dir = self.config.dataset.dataset.test_imgs_dir,
+            transform = self.transform,            
         )
         _dataloader = DataLoader(
             dataset,

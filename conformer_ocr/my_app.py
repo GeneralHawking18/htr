@@ -17,6 +17,7 @@ def my_app(cfg : DictConfig) -> None:
     # dataset.test()
     conf_ocr = model.TransformerOCRCTC(cfg)
     conf_ocr.train()
+    conf_ocr.export_submission()
     # print(cfg)
     # print(cfg.model)
     # a = OmegaConf.to_yaml(cfg)

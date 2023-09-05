@@ -23,16 +23,15 @@ from transformer_ocr.utils.image_processing import resize_img, get_new_width, No
 
 class Test_OCRDataset(Dataset):
     def __init__(self, 
-        imgs_dir, 
+        test_imgs_dir, 
         transform = None, 
     ):
         super().__init__()
-        self.imgs_dir = imgs_dir
         self.transform = transform
 
         self.list_imgs = [[img_dir] for img_dir in sorted(
-            glob.glob("{}/*.jpg".format(imgs_dir)) + \
-            glob.glob("{}/*.png".format(imgs_dir))
+            glob.glob("{}/*.jpg".format(test_imgs_dir)) + \
+            glob.glob("{}/*.png".format(test_imgs_dir))
         )]
 
     def __len__(self):
@@ -52,7 +51,7 @@ class Test_OCRDataset(Dataset):
     @staticmethod
     def collate_fn(batch):
         img_names, images = zip(*batch)
-        images = torch.stack(images)
+        # images = torch.stack(images)
         return img_names, images
 
 
