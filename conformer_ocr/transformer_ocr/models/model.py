@@ -1,9 +1,12 @@
 import os
+import io, zipfile
 import time
 import numpy as np
 import torch
 import math
 import logging
+
+
 from torch.optim import Adam
 from torch import nn
 import torch.nn.functional as F
@@ -12,10 +15,14 @@ import torchvision.transforms as transforms
 from omegaconf import DictConfig, ListConfig
 from ctcdecode import CTCBeamDecoder
 from torchsummary import summary
+from tqdm import tqdm
 
 from transformer_ocr.core.optimizers import NaiveScheduler
 from transformer_ocr.utils.vocab import VocabBuilder
-from transformer_ocr.utils.dataset import OCRDataset, ClusterRandomSampler, Collator
+from transformer_ocr.utils.dataset import (
+    OCRDataset, Test_OCRDataset,
+    ClusterRandomSampler, Collator
+)
 from transformer_ocr.utils.augment import ImgAugTransform
 from transformer_ocr.utils.metrics import metrics
 from transformer_ocr.utils.image_processing import resize_img
@@ -66,7 +73,7 @@ class TransformerOCRCTC:
                                     cnn_args=config.model.cnn_args,
                                     transformer_type=config.model.transformer_type,
                                     transformer_args=config.model.transformer_args)
-
+        
         device = self.get_devices(self.config.pl_params.pl_trainer.gpus)
         print(device)
         if isinstance(device, int):
@@ -113,7 +120,10 @@ class TransformerOCRCTC:
 
             self.criterion = nn.CTCLoss(**self.config.pl_params.loss_func)
         else:
+            
             logging.info('Start predicting ...')
+            self.test_data = self.test_dataloader()
+            
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
@@ -161,51 +171,76 @@ class TransformerOCRCTC:
         total_gpu_time: float = 0.0
         best_acc: float = 0.0
         start_step: int = 0
-
+        total_data_size = 0
         data_iter = iter(self.train_data)
         self.model.zero_grad()
 
-        for i in range(self.config.pl_params.pl_trainer.max_steps):
-            start_step += 1
-            start_time = time.time()
+        self.best_ckpt = ("", float("inf"))
 
-            try:
-                batch = next(data_iter)
-            except StopIteration:
-                data_iter = iter(self.train_data)
-                batch = next(data_iter)
+        for epoch in range(0, self.config.pl_params.pl_trainer.max_epochs):
+            for i, batch in enumerate((train_tqdm:= tqdm(self.train_data, desc = f"Epoch {epoch} - training: "))):
+                
+                """ for i in range(self.config.pl_params.pl_trainer.max_steps):
+                start_step += 1
+                start_time = time.time()
+                i += 1
+                try:
+                    batch = next(data_iter)
+                except StopIteration:
+                    data_iter = iter(self.train_data)
+                    batch = next(data_iter)
 
-            total_loader_time += time.time() - start_time
-            start_time = time.time()
+                total_loader_time += time.time() - start_time
+                start_time = time.time() """
 
-            loss = self.training_step(batch=batch, step=i)
+                loss = self.training_step(batch=batch, step=i)
+                train_tqdm.set_postfix({'step_loss': round(loss.item(), 4)})
+                # total_gpu_time += time.time() - start_time
 
-            total_gpu_time += time.time() - start_time
-            total_loss += loss.item()
+                total_loss += loss.item()
+                total_data_size += batch['img'].shape[0]
 
-            if start_step % self.config.pl_params.pl_trainer.log_every_n_steps == 0:
-                info = 'iter: {:06d} - train loss: {:.3f} - lr: {:.2e} - load time: {:.2f} - gpu time: {:.2f}'.format(
-                    start_step,
-                    total_loss / self.config.pl_params.pl_trainer.log_every_n_steps,
-                    self.optimizer.get_optimizer().param_groups[0]['lr'],
-                    total_loader_time,
-                    total_gpu_time)
+                """if start_step % self.config.pl_params.pl_trainer.log_every_n_steps == 0:
+                    info = 'iter: {:06d} - train loss: {:.3f} - lr: {:.2e} - load time: {:.2f} - gpu time: {:.2f}'.format(
+                        start_step,
+                        total_loss / self.config.pl_params.pl_trainer.log_every_n_steps,
+                        self.optimizer.get_optimizer().param_groups[0]['lr'],
+                        total_loader_time,
+                        total_gpu_time)
+                
+                if start_step % self.config.pl_params.pl_trainer.log_every_n_steps == 0:
+                    info = 'iter: {:06d} - train loss: {:.3f} - lr: {:.2e} - load time: {:.2f} - gpu time: {:.2f}'.format(
+                        start_step,
+                        total_loss / self.config.pl_params.pl_trainer.log_every_n_steps,
+                        self.optimizer.get_optimizer().param_groups[0]['lr'],
+                        total_loader_time,
+                        total_gpu_time)"""
+                    # reset
+            
+            info = 'Epoch {}: train loss: {:.3f} - lr: {:.2e}'.format(
+                epoch,
+                total_loss / len(self.train_data)
+                self.optimizer.get_optimizer().param_groups[0]['lr'],
+            )
+            # total_loader_time = 0
+            # total_gpu_time = 0
+            
+            logging.info(info)
+            
+            total_loss = 0
+            # total_data_size = 0
+            val_info = self.validation()
 
-                # reset
-                total_loss = 0
-                total_loader_time = 0
-                total_gpu_time = 0
-
-                logging.info(info)
-
-            if start_step % self.config.pl_params.pl_trainer.val_every_n_steps == 0:
+            """if start_step % self.config.pl_params.pl_trainer.val_every_n_steps == 0:
                 val_info = self.validation()
-
-                if val_info['word accuracy'] > best_acc:
-                    saved_ckpt = os.path.join(self.config.pl_params.model_callbacks.dirpath,
-                                              self.config.pl_params.model_callbacks.filename)
-                    self.save_weights(saved_ckpt)
-                    best_acc = val_info['word accuracy']
+            """
+            if val_info['cer'] < self.best_ckpt[1]:
+                saved_ckpt = os.path.join(
+                    self.config.pl_params.model_callbacks.dirpath,
+                    self.config.pl_params.model_callbacks.filename.format()
+                )
+                self.save_weights(saved_ckpt)
+                self.best_ckpt = (saved_ckpt, val_info['cer'])
 
     def validation(self):
         self.model.eval()
@@ -235,15 +270,15 @@ class TransformerOCRCTC:
         acc_per_char = metrics(actual_sents, pred_sents, type='char_acc')
         normalized_ed = metrics(actual_sents, pred_sents, type='normalized_ed')
         cer = metrics(actual_sents, pred_sents, type='cer')
-        for i in range(len(pred_sents)):
+        """for i in range(len(pred_sents)):
             if pred_sents[i] != actual_sents[i]:
-                print('Actual_sent: {}, pred_sent: {}'.format(actual_sents[i], pred_sents[i]))
+                print('Actual_sent: {}, pred_sent: {}'.format(actual_sents[i], pred_sents[i]))"""
 
         val_info = {"loss": losses.mean(),
                     "word accuracy": avg_sent_acc * 100,
                     "character accuracy": acc_per_char * 100,
                     "normalized edit distance": normalized_ed * 100,
-                    "cer": cer}
+                    "cer": cer.item()}
 
         logging.info(val_info)
 
@@ -287,7 +322,34 @@ class TransformerOCRCTC:
             pred_sent = self._greedy_decode(logits[0])
 
         return pred_sent
+    
+    def export_submission(self):
+        # Load the best weight to submit
+        self.load_weights(self.best_ckpt[0])
 
+        model_name = self.model.__class__.__name__
+        file_zip_path = f"./outputs/{model_name}_{self.best_ckpt[1]}.zip"
+        zip_buffer = io.BytesIO()
+        zip_file = zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED, False)
+        data = io.BytesIO()
+
+        for batch in tqdm(self.test_loader, desc = "Testing: "):
+            self.model.eval()
+            img_names, imgs = batch
+            preds = self.predict(imgs)
+
+            for img_name, pred in zip(img_names, preds):
+                if pred == "":
+                    pred = "a"
+                data.write(f"{img_name} {pred}\n")
+
+        zip_file.writestr("submission.txt", data.getvalue())
+
+        # Store file
+        with open(file_zip_path, 'wb') as f:
+            f.write(zip_buffer.getvalue())
+        
+        
     @property
     def transform(self):
         if not self.config.dataset.aug.image_aug:
@@ -305,6 +367,19 @@ class TransformerOCRCTC:
         _dataloader = self._prepare_data('valid_{}'.format(self.config.dataset.dataset.name),
                                          self.config.dataset.dataset.valid_annotation, False)
 
+        return _dataloader
+
+    def test_dataloader(self) -> DataLoader:
+        dataset = Test_OCRDataset(
+            test_img_dir = self.config.dataset.test_img_dir,
+            transform = self.transform            
+        )
+        _dataloader = DataLoader(
+            dataset,
+            batch_size = self.batch_size,
+            collate_fn = Test_OCRDataset.collate_fn,
+            shuffle = False,
+        )
         return _dataloader
 
     def _prepare_data(self, saved_path: str, data_path: str, use_transform: bool = True) -> DataLoader:

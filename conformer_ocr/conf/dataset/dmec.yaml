@@ -11,6 +11,8 @@ dataset:
         img_width_min: 32
         img_width_max: 128 
         max_readers: 16
+    test_img_dir: /content/ocr/public_test_data/new_public_test
+    test_outputs: /content/drive/MyDrive/HUST/ai_hackathon/ocr/htr/conformer_ocr/outputs
 
 dataloader:
     num_workers: 3

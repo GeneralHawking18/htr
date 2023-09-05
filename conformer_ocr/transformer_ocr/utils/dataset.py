@@ -1,4 +1,4 @@
-import os
+import os, glob
 import cv2
 import random
 import numpy as np
@@ -21,6 +21,42 @@ from transformer_ocr.utils.vocab import VocabBuilder
 from transformer_ocr.utils.image_processing import resize_img, get_new_width, NormalizePAD, ResizeNormalize
 
 
+class Test_OCRDataset(Dataset):
+    def __init__(self, 
+        imgs_dir, 
+        transform = None, 
+    ):
+        super().__init__()
+        self.imgs_dir = imgs_dir
+        self.transform = transform
+
+        self.list_imgs = [[img_dir] for img_dir in sorted(
+            glob.glob("{}/*.jpg".format(imgs_dir)) + \
+            glob.glob("{}/*.png".format(imgs_dir))
+        )]
+
+    def __len__(self):
+        return len(self.list_imgs)
+
+    def __getitem__(self, idx):
+        img_dir = self.list_imgs[idx][0]
+        img_name = os.path.basename(img_dir)
+
+        img = Image.open(img_dir)
+        # print(img.size)
+        # display(img)
+        if self.transform:
+            img = self.transform(img)
+        return img_name, img
+    
+    @staticmethod
+    def collate_fn(batch):
+        img_names, images = zip(*batch)
+        images = torch.stack(images)
+        return img_names, images
+
+
+
 class OCRDataset(Dataset):
     """Dumps or loads dataset for OCR task. This followed by:
     https://github.com/clovaai/deep-text-recognition-benchmark
@@ -38,14 +74,11 @@ class OCRDataset(Dataset):
     """
 
     def __init__(self, saved_path,
-                 root_dir,
-                 gt_path,
-                 vocab_builder,
-                 img_height,
-                 img_width_min,
-                 img_width_max,
-                 transform,
-                 max_readers):
+            root_dir, gt_path,
+            vocab_builder,
+            img_height, img_width_min, img_width_max,
+            transform, max_readers
+        ):
 
         # Image info
         self.img_height = img_height
