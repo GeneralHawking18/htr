@@ -20,7 +20,7 @@ def main():
         trainer.load_checkpoint(args.checkpoint)
 
      
-    trainer.train()
+    # trainer.train()
     trainer.export_submission() 
 
 if __name__ == '__main__':

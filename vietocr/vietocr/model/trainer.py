@@ -111,7 +111,7 @@ class Trainer():
                     self.test_data_root, self.test_annotation, masked_language_model=False)
 
         self.train_losses = []
-        self.best_acc = 0 
+        self.best_cer = 0 
         self.max_seq_length = config['transformer']["max_seq_length"]
 
     def train(self):
@@ -154,15 +154,15 @@ class Trainer():
 
             if self.valid_annotation and self.iter % self.valid_every == 0:
                 val_loss = self.validate()
-                acc_full_seq, acc_per_char = self.precision(self.metrics)
+                acc_full_seq, acc_per_char, cer = self.precision(self.metrics)
 
                 info = 'iter: {:06d} - valid loss: {:.3f} - acc full seq: {:.4f} - acc per char: {:.4f}'.format(self.iter, val_loss, acc_full_seq, acc_per_char)
                 print(info)
                 self.logger.log(info)
 
-                if acc_full_seq > self.best_acc:
+                if cer < self.best_cer:
                     self.save_weights(self.export_weights)
-                    self.best_acc = acc_full_seq
+                    self.best_cer = cer
 
             
     def validate(self):
@@ -238,8 +238,9 @@ class Trainer():
 
         acc_full_seq = compute_accuracy(actual_sents, pred_sents, mode='full_sequence')
         acc_per_char = compute_accuracy(actual_sents, pred_sents, mode='per_char')
-    
-        return acc_full_seq, acc_per_char
+        cer = compute_accuracy(actual_sents, pred_sents, mode='cer')
+        
+        return acc_full_seq, acc_per_char, cer
     
     def export_submission(self):
             self.logger.log('Start predicting ...')
@@ -250,21 +251,21 @@ class Trainer():
                 self.load_weights(self.export_weights)
 
             model_name = self.model.__class__.__name__
-            # best_cer_val = round(self.best_ckpt[1], 4)
+            best_cer_val = round(self.best_cer)
 
             # save_folder_path = os.getcwd() + "/outputs"
             """if not os.path.exists(save_folder_path):
                 os.makedirs(save_folder_path)"""
 
             # Nó tự động lưu trong outputs mà hydra cài sẵn, nên không cần phải makedir
-            file_zip_path = f"{model_name}_{self.best_acc}.zip"
+            file_zip_path = f"{model_name}_{best_cer_val}.zip"
 
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED, False) as zip_file:
                 data = io.BytesIO()
 
                 _, preds, _, img_names = self.predict(mode = "test")
-
+                print(img_names)
                 for img_name, pred in zip(img_names, preds):
                     if pred == "":
                         pred = "a"

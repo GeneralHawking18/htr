@@ -4,6 +4,7 @@ import yaml
 import numpy as np
 import uuid
 import requests
+from torchmetrics.functional.text import char_error_rate
 
 def download_weights(id_or_url, cached=None, md5=None, quiet=False):
     if id_or_url.startswith('http'):
@@ -70,7 +71,10 @@ def compute_accuracy(ground_truth, predictions, mode='full_sequence'):
                 avg_accuracy = 1
             else:
                 avg_accuracy = 0
+    elif mode == "cer":
+        return char_error_rate(ground_truth, predictions)
     else:
         raise NotImplementedError('Other accuracy compute mode has not been implemented')
-
     return avg_accuracy
+
+

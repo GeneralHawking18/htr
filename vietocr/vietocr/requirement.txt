@@ -3,3 +3,4 @@ lmdb
 timm
 torch-summary
 scipy==1.10.0
+torchmetrics
