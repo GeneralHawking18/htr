@@ -138,3 +138,4 @@ dmypy.json
 cython_debug/
 train_data/
 valid_data/
+weights/

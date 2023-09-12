@@ -2,16 +2,17 @@
 vocab: 'aAàÀảẢãÃáÁạẠăĂằẰẳẲẵẴắẮặẶâÂầẦẩẨẫẪấẤậẬbBcCdDđĐeEèÈẻẺẽẼéÉẹẸêÊềỀểỂễỄếẾệỆfFgGhHiIìÌỉỈĩĨíÍịỊjJkKlLmMnNoOòÒỏỎõÕóÓọỌôÔồỒổỔỗỖốỐộỘơƠờỜởỞỡỠớỚợỢpPqQrRsStTuUùÙủỦũŨúÚụỤưƯừỪửỬữỮứỨựỰvVwWxXyYỳỲỷỶỹỸýÝỵỴzZ0123456789!"#$%&''()*+,-./:;<=>?@[\]^_`{|}~ '
 
 # cpu, cuda, cuda:0
-device: cuda:0
+device: cpu 
+gpus: 0 
 
 seq_modeling: transformer
 transformer:  
-    d_model: 256
+    d_model: 768
     nhead: 8
     num_encoder_layers: 6
     num_decoder_layers: 6
     dim_feedforward: 2048
-    max_seq_length: 1024
+    max_seq_length: 32
     pos_dropout: 0.1
     trans_dropout: 0.1
 
@@ -20,7 +21,7 @@ optimizer:
     pct_start: 0.1
 
 trainer:
-    batch_size: 256
+    batch_size: 2
     print_every: 10
     valid_every: 400
     iters: 100000
@@ -41,7 +42,7 @@ dataset:
     # resize image to 32 height, larger height will increase accuracy
     image_height: 32
     image_min_width: 32
-    image_max_width: 512
+    image_max_width: 128 
 
 dataloader:
     num_workers: 3
@@ -65,7 +66,7 @@ pretrain:
 # url or local path
 weights: https://drive.google.com/uc?id=1nTKlEog9YFK74kPyX0qLwCWi60_YHHk4
 
-backbone: vgg19_bn
+backbone: convnext_v1_small
 cnn:
     # pooling stride size
     ss:

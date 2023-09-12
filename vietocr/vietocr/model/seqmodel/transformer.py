@@ -55,6 +55,7 @@ class LanguageTransformer(nn.Module):
     
     def forward_encoder(self, src):
         src = self.pos_enc(src*math.sqrt(self.d_model))
+        
         memory = self.transformer.encoder(src)
         return memory
     

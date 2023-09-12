@@ -33,6 +33,7 @@ class Vgg(nn.Module):
         """
 
         conv = self.features(x)
+        # print("feature shape: ", conv.shape)
         conv = self.dropout(conv)
         conv = self.last_conv_1x1(conv)
 

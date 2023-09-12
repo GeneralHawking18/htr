@@ -1,2 +1,5 @@
 einops==0.2.0
 lmdb
+timm
+torch-summary
+scipy==1.10.0

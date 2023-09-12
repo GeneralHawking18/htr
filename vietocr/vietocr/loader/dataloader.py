@@ -200,6 +200,12 @@ class Collator(object):
             'tgt_output': torch.LongTensor(tgt_output),
             'tgt_padding_mask': torch.BoolTensor(tgt_padding_mask),
             'filenames': filenames
-        }   
+        }  
+        
+        """for key, val in rs.items():
+            if torch.is_tensor(val):
+                print(f"{key}: ", val.shape, val) 
+            else:
+                print(f"{key}: ", val)"""
         
         return rs
