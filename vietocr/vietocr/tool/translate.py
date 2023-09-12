@@ -83,9 +83,9 @@ def translate(img, model, max_seq_length=128, sos_token=1, eos_token=2):
         char_probs = [[1]*len(img)]
 
         max_length = 0
-
-        while max_length <= max_seq_length and not all(np.any(np.asarray(translated_sentence).T==eos_token, axis=1)):
-
+        
+        while max_length < max_seq_length and not all(np.any(np.asarray(translated_sentence).T==eos_token, axis=1)):
+            # print("max_len, max_seq_length: ", max_length, max_seq_length)
             tgt_inp = torch.LongTensor(translated_sentence).to(device)
             
 #            output = model(img, tgt_inp, tgt_key_padding_mask=None)

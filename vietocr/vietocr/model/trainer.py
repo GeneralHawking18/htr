@@ -18,26 +18,53 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, CyclicLR, OneCycleLR
 
 import torchvision 
 
+from torchsummary import summary
+
 from vietocr.tool.utils import compute_accuracy
 from PIL import Image
 import numpy as np
-import os
+import os, io, zipfile 
+from tqdm import tqdm
+
 import matplotlib.pyplot as plt
 import time
 
 class Trainer():
     def __init__(self, config, pretrained=False, augmentor=ImgAugTransform()):
-
+        gpus = config['gpus']
+        device = config["device"]
+        logger = config['trainer']['log']
+        if logger:
+            self.logger = Logger(logger) 
+            
         self.config = config
         self.model, self.vocab = build_model(config)
+        # summary(self.model, (3, 32, 128), "cpu")
+        if "cuda" in device:
         
-        self.device = config['device']
+            if isinstance(gpus, int):
+                self.logger.log("It's running on GPU {}".format(gpus))
+                self.device = 'cuda:{}'.format(gpus)
+                self.model = self.model.to(self.device)
+            elif isinstance(gpus, list):
+                self.logger.log("It's running on multi-GPUs {}".format(gpus))
+                self.device = 'cuda:{}'.format(gpus[0])
+                self.model = self.model.to('cuda:{}'.format(gpus[0]))
+                self.model = nn.DataParallel(self.model, device_ids=gpus)
+        else:
+            self.device = config['device']
+            self.model = self.model.to(self.device)
+        
+        
         self.num_iters = config['trainer']['iters']
         self.beamsearch = config['predictor']['beamsearch']
 
         self.data_root = config['dataset']['data_root']
+        self.test_data_root = config['dataset']['test_data_root']
         self.train_annotation = config['dataset']['train_annotation']
         self.valid_annotation = config['dataset']['valid_annotation']
+        self.test_annotation = config['dataset']['test_annotation']
+
         self.dataset_name = config['dataset']['name']
 
         self.batch_size = config['trainer']['batch_size']
@@ -50,10 +77,8 @@ class Trainer():
         self.checkpoint = config['trainer']['checkpoint']
         self.export_weights = config['trainer']['export']
         self.metrics = config['trainer']['metrics']
-        logger = config['trainer']['log']
+        
     
-        if logger:
-            self.logger = Logger(logger) 
 
         if pretrained:
             weight_file = download_weights(**config['pretrain'], quiet=config['quiet'])
@@ -74,21 +99,26 @@ class Trainer():
         transforms = None
         if self.image_aug:
             transforms =  augmentor
-
+        
         self.train_gen = self.data_gen('train_{}'.format(self.dataset_name), 
                 self.data_root, self.train_annotation, self.masked_language_model, transform=transforms)
         if self.valid_annotation:
             self.valid_gen = self.data_gen('valid_{}'.format(self.dataset_name), 
                     self.data_root, self.valid_annotation, masked_language_model=False)
+        
+        if self.test_annotation:
+            self.test_gen = self.data_gen('test_{}'.format(self.dataset_name), 
+                    self.test_data_root, self.test_annotation, masked_language_model=False)
 
         self.train_losses = []
-        
+        self.best_acc = 0 
+        self.max_seq_length = config['transformer']["max_seq_length"]
+
     def train(self):
         total_loss = 0
         
         total_loader_time = 0
         total_gpu_time = 0
-        best_acc = 0
 
         data_iter = iter(self.train_gen)
         for i in range(self.num_iters):
@@ -130,9 +160,9 @@ class Trainer():
                 print(info)
                 self.logger.log(info)
 
-                if acc_full_seq > best_acc:
+                if acc_full_seq > self.best_acc:
                     self.save_weights(self.export_weights)
-                    best_acc = acc_full_seq
+                    self.best_acc = acc_full_seq
 
             
     def validate(self):
@@ -162,19 +192,32 @@ class Trainer():
         
         return total_loss
     
-    def predict(self, sample=None):
+    def predict(self, mode = "valid", sample=None):
         pred_sents = []
         actual_sents = []
         img_files = []
 
-        for batch in  self.valid_gen:
+        if mode == "valid":
+            data_gen = self.valid_gen
+        else:
+            data_gen = self.test_gen
+
+        for batch in tqdm(
+            data_gen, desc = f"{mode}ing: ",
+            ncols = 100, position=0, leave=True
+        ):
             batch = self.batch_to_device(batch)
 
             if self.beamsearch:
-                translated_sentence = batch_translate_beam_search(batch['img'], self.model)
+                translated_sentence = batch_translate_beam_search(
+                    batch['img'], self.model, 
+                    max_seq_length = self.max_seq_length)
                 prob = None
             else:
-                translated_sentence, prob = translate(batch['img'], self.model)
+                translated_sentence, prob = translate(
+                    batch['img'], self.model, 
+                    max_seq_length = self.max_seq_length,
+                )
 
             pred_sent = self.vocab.batch_decode(translated_sentence.tolist())
             actual_sent = self.vocab.batch_decode(batch['tgt_output'].tolist())
@@ -198,6 +241,42 @@ class Trainer():
     
         return acc_full_seq, acc_per_char
     
+    def export_submission(self):
+            self.logger.log('Start predicting ...')
+            self.model.eval()
+
+            # Load the best weight to submit
+            if self.export_weights:
+                self.load_weights(self.export_weights)
+
+            model_name = self.model.__class__.__name__
+            # best_cer_val = round(self.best_ckpt[1], 4)
+
+            # save_folder_path = os.getcwd() + "/outputs"
+            """if not os.path.exists(save_folder_path):
+                os.makedirs(save_folder_path)"""
+
+            # Nó tự động lưu trong outputs mà hydra cài sẵn, nên không cần phải makedir
+            file_zip_path = f"{model_name}_{self.best_acc}.zip"
+
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED, False) as zip_file:
+                data = io.BytesIO()
+
+                _, preds, _, img_names = self.predict(mode = "test")
+
+                for img_name, pred in zip(img_names, preds):
+                    if pred == "":
+                        pred = "a"
+                    line = bytes(f"{img_name} {pred}\n", "utf=8")
+                    data.write(line)
+
+            zip_file.writestr("prediction.txt", data.getvalue())
+
+            # Store file
+            with open(file_zip_path, 'wb') as f:
+                f.write(zip_buffer.getvalue())
+
     def visualize_prediction(self, sample=16, errorcase=False, fontname='serif', fontsize=16):
         
         pred_sents, actual_sents, img_files, probs = self.predict(sample)

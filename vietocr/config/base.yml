@@ -16,6 +16,25 @@ transformer:
     pos_dropout: 0.1
     trans_dropout: 0.1
 
+backbone: convnext_v1_small
+cnn:
+    # pooling stride size
+    ss:
+        - [2, 2]
+        - [2, 2]
+        - [2, 1]
+        - [2, 1]
+        - [1, 1]         
+    # pooling kernel size 
+    ks:
+        - [2, 2]
+        - [2, 2]
+        - [2, 1]
+        - [2, 1]
+        - [1, 1]
+    # dim of ouput feature map
+    hidden: 256
+
 optimizer:
     max_lr: 0.0003 
     pct_start: 0.1
@@ -26,7 +45,7 @@ trainer:
     valid_every: 400
     iters: 100000
     # where to save our model for prediction
-    export: ./weights/transformerocr.pth
+    export: # ./weights/transformerocr.pth
     checkpoint: # ./checkpoint/transformerocr_checkpoint.pth
     log: ./train.log
     # null to disable compuate accuracy, or change to number of sample to enable validiation while training
@@ -37,8 +56,10 @@ dataset:
     name: data
     # path to annotation and image
     data_root: /content/ocr/training_data/new_train
+    test_data_root: /content/ocr/public_test_data/new_public_test
     train_annotation: /content/drive/MyDrive/HUST/ai_hackathon/ocr/htr/vietocr/data/train.txt
     valid_annotation: /content/drive/MyDrive/HUST/ai_hackathon/ocr/htr/vietocr/data/val.txt
+    test_annotation: /content/ocr/test.txt
     # resize image to 32 height, larger height will increase accuracy
     image_height: 32
     image_min_width: 32
@@ -65,27 +86,3 @@ pretrain:
 
 # url or local path
 weights: https://drive.google.com/uc?id=1nTKlEog9YFK74kPyX0qLwCWi60_YHHk4
-
-backbone: convnext_v1_small
-cnn:
-    # pooling stride size
-    ss:
-        - [2, 2]
-        - [2, 2]
-        - [2, 1]
-        - [2, 1]
-        - [1, 1]         
-    # pooling kernel size 
-    ks:
-        - [2, 2]
-        - [2, 2]
-        - [2, 1]
-        - [2, 1]
-        - [1, 1]
-    # dim of ouput feature map
-    hidden: 256
-
-optimizer:
-    max_lr: 0.001
-    pct_start: 0.1
-

@@ -204,8 +204,8 @@ class Collator(object):
         
         """for key, val in rs.items():
             if torch.is_tensor(val):
-                print(f"{key}: ", val.shape, val) 
+                print("{key}: ", val.shape, val) 
             else:
-                print(f"{key}: ", val)"""
-        
+                print("{key}: ", val)
+        """
         return rs

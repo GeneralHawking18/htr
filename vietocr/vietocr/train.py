@@ -18,8 +18,10 @@ def main():
 
     if args.checkpoint:
         trainer.load_checkpoint(args.checkpoint)
-        
+
+     
     trainer.train()
+    trainer.export_submission() 
 
 if __name__ == '__main__':
     main()

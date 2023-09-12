@@ -14,7 +14,9 @@ class LanguageTransformer(nn.Module):
         
         self.d_model = d_model
         self.embed_tgt = nn.Embedding(vocab_size, d_model)
-        self.pos_enc = PositionalEncoding(d_model, pos_dropout, max_seq_length)
+        
+        self.pos_enc = PositionalEncoding(d_model, pos_dropout, max_len = max_seq_length)
+       
 #        self.learned_pos_enc = LearnedPositionalEncoding(d_model, pos_dropout, max_seq_length)
 
         self.transformer = nn.Transformer(d_model, nhead, 
@@ -38,7 +40,7 @@ class LanguageTransformer(nn.Module):
         
         src = self.pos_enc(src*math.sqrt(self.d_model))
 #        src = self.learned_pos_enc(src*math.sqrt(self.d_model))
-
+       
         tgt = self.pos_enc(self.embed_tgt(tgt) * math.sqrt(self.d_model))
         
         output = self.transformer(src, tgt, tgt_mask=tgt_mask, src_key_padding_mask=src_key_padding_mask,
@@ -54,15 +56,15 @@ class LanguageTransformer(nn.Module):
         return mask
     
     def forward_encoder(self, src):
+        # print("src enc: ", src.shape)
         src = self.pos_enc(src*math.sqrt(self.d_model))
-        
         memory = self.transformer.encoder(src)
         return memory
     
     def forward_decoder(self, tgt, memory):
         tgt_mask = self.gen_nopeek_mask(tgt.shape[0]).to(tgt.device)
         tgt = self.pos_enc(self.embed_tgt(tgt) * math.sqrt(self.d_model))
-        
+        # print("tgt, tgt_mask: ", tgt.shape, tgt_mask.shape)
         output = self.transformer.decoder(tgt, memory, tgt_mask=tgt_mask)
 #        output = rearrange(output, 't n e -> n t e')
         output = output.transpose(0, 1)
@@ -91,6 +93,7 @@ class PositionalEncoding(nn.Module):
         self.register_buffer('pe', pe)
 
     def forward(self, x):
+        # print("x, self.pe: ", x.shape, self.pe.shape)
         x = x + self.pe[:x.size(0), :]
 
         return self.dropout(x)

@@ -18,6 +18,7 @@ class CNN(nn.Module):
             self.model = ConvNext_v1(backbone)
 
     def forward(self, x):
+        
         return self.model(x)
 
     def freeze(self):
