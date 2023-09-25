@@ -10,12 +10,12 @@ class NaiveScheduler:
         n_warmup_steps (int):
     """
 
-    def __init__(self, optimizer: optim.Optimizer, lr_mul, d_model, n_warmup_steps):
+    def __init__(self, optimizer: optim.Optimizer, lr_mul, d_model, n_warmup_steps, n_steps = 0):
         self._optimizer = optimizer
         self.lr_mul = lr_mul
         self.d_model = d_model
         self.n_warmup_steps = n_warmup_steps
-        self.n_steps = 0
+        self.n_steps = n_steps
 
     def step_and_update_lr(self):
         """Step with the inner optimizer."""
@@ -39,22 +39,23 @@ class NaiveScheduler:
 
         self.n_steps += 1
         lr = self.lr_mul * self._get_lr_scale()
+        
         for param_group in self._optimizer.param_groups:
             param_group['lr'] = lr
 
 
 def test():
-    lr_mul = 5.0
+    lr_mul1 = 0.8
+    lr_mul2 = 1
     steps = 200000
-    d_model = 256
-    n_warmup_steps = 4000
+    d_model = 768
+    n_warmup_steps = 2000
     for i in range(1, steps):
-        lr = lr_mul * (d_model ** -0.5) * min(i ** (-0.5), i * n_warmup_steps ** (-1.5))
-
+        lr1 = lr_mul1 * (d_model ** -0.5) * min(i ** (-0.5), i * n_warmup_steps ** (-1.5))
+        lr2 = lr_mul2 * (d_model ** -0.5) * min(i ** (-0.5), i * n_warmup_steps ** (-1.5))
         if i % 10 == 0:
-            print(i, lr)
+            print(i, lr1, lr2)
 
 
 if __name__ == "__main__":
     test()
-

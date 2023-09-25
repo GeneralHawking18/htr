@@ -179,7 +179,7 @@ class OCRDataset(Dataset):
         """Create LMDB dataset to save on disk."""
         with open(self.gt_path, mode='r', encoding='utf-8-sig') as f:
             lines = f.readlines()
-            annotations = [line.strip().split('\t') for line in lines]
+            annotations = [line.strip().split() for line in lines]
         dataset_size = len(annotations)
         # print(dataset_size)
         # Create Environment for LMDB
@@ -235,7 +235,7 @@ class OCRDataset(Dataset):
             self.write_cache(env, cache)
             cache = {}
 
-        dataset_size = cnt - 1
+        dataset_size = cnt # Why - 1?
         cache['num-samples'] = str(dataset_size).encode()
         self.write_cache(env, cache)
 
