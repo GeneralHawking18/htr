@@ -1,36 +1,38 @@
 pl_trainer:
-  gpus: [0, 1]
-  max_epochs: 40
-  max_steps: 100000 # computed at runtime if not set
-  num_nodes: 1
-  accelerator: dp
-  accumulate_grad_batches: 1
-  checkpoint_callback: true
-  log_every_n_steps: 10  # Interval of logging
-  val_every_n_steps: 500  # Interval of logging
-  val_check_interval: 0.5 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
-  detect_anomaly: true
-  check_val_every_n_epoch: 1
-  precision: 32
-  sync_batchnorm: false
-  benchmark: false
-  gradient_clip_val: 1.0
-  gradient_clip_algorithm: value
+    gpus: [0, 1]
+    max_epochs: 1000
+    max_steps: 100000 # computed at runtime if not set
+    num_nodes: 100
+    accelerator: dp
+    accumulate_grad_batches: 1
+    checkpoint_callback: true
+    log_every_n_steps: 10  # Interval of logging
+    val_every_n_steps: 500  # Interval of logging
+    val_check_interval: 0.5 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
+    detect_anomaly: true
+    check_val_every_n_epoch: 1
+    precision: 32
+    sync_batchnorm: false
+    benchmark: false
+    gradient_clip_val: 1.0
+    gradient_clip_algorithm: value
 
 loss_func:
-  blank: 0 
-  reduction: sum 
-  zero_infinity: true
+    blank: 0 
+    reduction: sum 
+    zero_infinity: true
 
 ctc_smoothing: 0.1
 max_norm: 5.0
-pretrained:
+# pretrained: /kaggle/input/crnn-ctc-ckpt/small_95.13.pth
+ckpt_path: /kaggle/input/crnn-ctc-ckpt/small_95.13.pth
+load_weights_only: True # /kaggle/input/crnn-ctc-ckpt/conformer_ctc9178_ep_169.pth # /kaggle/input/conformer-ctc-ckpt-full-data/best_ckpt_0_1.pth
 use_beamsearch: True
 predict: False
 
-model_callbacks:
-  monitor: sentence accuracy
-  dirpath: ckpts
-  filename: dmec-{iter:02d}-{sentence accuracy:.2f}
-  save_top_k: 3
-  mode: max
+model_callbacks: 
+    monitor: sentence accuracy
+    dirpath: /kaggle/working/ckpts
+    filename: dmec-{iter:02d}-{sentence accuracy:.2f}
+    save_top_k: 3
+    mode: max

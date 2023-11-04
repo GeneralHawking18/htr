@@ -19,6 +19,7 @@ def get_new_width(old_w, old_h, expected_height, image_min_width, image_max_widt
 def resize_img(image, image_height, image_min_width, image_max_width):
     """TODO
     """
+
     img = image.convert('RGB')
 
     old_w, old_h = img.size
