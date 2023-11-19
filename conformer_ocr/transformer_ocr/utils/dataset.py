@@ -17,9 +17,10 @@ from torch.utils.data import DataLoader
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-from transformer_ocr.utils.vocab import VocabBuilder
-from transformer_ocr.utils.image_processing import resize_img, get_new_width, NormalizePAD, ResizeNormalize
-
+# from transformer_ocr.utils.vocab import VocabBuilder
+# from transformer_ocr.utils.image_processing import resize_img, get_new_width, NormalizePAD, ResizeNormalize
+from .image_processing import resize_img, get_new_width, NormalizePAD, ResizeNormalize
+from .vocab import VocabBuilder
 
 class Test_OCRDataset(Dataset):
     def __init__(self, 
@@ -76,7 +77,8 @@ class OCRDataset(Dataset):
             root_dir, gt_path,
             vocab_builder,
             img_height, img_width_min, img_width_max,
-            transform, max_readers
+            transform, max_readers,
+            saved_paths = None,
         ):
 
         # Image info
@@ -91,7 +93,7 @@ class OCRDataset(Dataset):
 
         # Vocabulary builder to encode text
         self.vocab_builder = vocab_builder
-
+        
         # Image transformation if any
         self.transform = transform
 
@@ -104,7 +106,7 @@ class OCRDataset(Dataset):
             self.write_data_to_disk()
         else:
             logging.info('{} exists!'.format(self.saved_path))
-
+        
         # Read LMDB file from the saved path
         self.env = lmdb.open(
             self.saved_path,
@@ -112,16 +114,54 @@ class OCRDataset(Dataset):
             readonly=True,
             lock=False,
             readahead=False,
-            meminit=False)
+            meminit=False
+        )
+
         self.txn = self.env.begin(write=False)
+            
+    
         # print(self.txn.get('num-samples'.encode()))
-        dataset_size = int(self.txn.get('num-samples'.encode()))
+        dataset_size = int(self.txn.get('num-samples'.encode())) 
         # dataset_size = 100000
         self.dataset_size = dataset_size
 
         clusters = self.build_clusters_by_img_width()
         self.clusters = collections.OrderedDict(sorted(clusters.items()))
-
+    
+    def concat_databases(self, db_paths):
+        save_path = "/kaggle/working/composed_dataset/train_composed"
+        if not os.path.exists(save_path):
+            os.system(f"! mkdir -p {save_path}")
+        env = lmdb.open(save_path, map_size = 1024 * 1024 * 10000)
+        # env.open_db(key="train_concated".encode(), txn=txn)
+        for j, path in enumerate(db_paths):
+            sub_env = lmdb.open(
+                path, max_readers=8, readonly=True,
+                lock=False, readahead=False, meminit=False
+            )
+            sub_txn = sub_env.begin(write = False)
+            len_db = int(sub_txn.get('num-samples'.encode())) 
+            cache = {}
+            pbar = tqdm(range(len_db), ncols=100, desc='Generate from {} ...'.format(path))
+            for idx in pbar:
+                imageKey = 'image-%09d' % ((j * len_db) + idx)
+                labelKey = 'label-%09d' % ((j * len_db) + idx)
+                pathKey = 'path-%09d' % ((j * len_db) + idx)
+                dimKey = 'dim-%09d' % ((j * len_db) + idx)
+                
+                cache[imageKey], cache[labelKey], cache[pathKey], cache[dimKey] = self.own_load_cache(sub_txn, idx)
+                """if idx % 1000 == 0:
+                    self.write_cache(env, cache)
+                    cache = {}"""
+                # print(cache[labelKey])
+            #if idx % 1000 == 0:
+            cache['num-samples'] = str(len_db * len(db_paths)).encode()
+            self.write_cache(env, cache)
+            cache = {}
+            sub_env.close()
+        env.close()
+    
+    
     def build_clusters_by_img_width(self) -> defaultdict:
         clusters = defaultdict(list)
 
@@ -144,7 +184,25 @@ class OCRDataset(Dataset):
             clusters[get_kernel(idx)].append(idx)
 
         return clusters
+    
+    @staticmethod
+    def own_load_cache(txn, idx):
+        """Load data from cache."""
+        binary_img = 'image-%09d' % idx
+        binary_img = txn.get(binary_img.encode())
+        
+        label = 'label-%09d' % idx
+        label = txn.get(label.encode())# .decode()
 
+        img_path = 'path-%09d' % idx
+        img_path = txn.get(img_path.encode())# .decode()
+        
+        dimKey = 'dim-%09d' % idx
+        img_dim = txn.get(dimKey.encode())
+        # img_dim = np.frombuffer(img_dim, dtype= np.int32)
+        
+        return binary_img, label, img_path, img_dim
+        
     def load_cache(self, idx):
         """Load data from cache."""
         binary_img = 'image-%09d' % idx
@@ -159,8 +217,8 @@ class OCRDataset(Dataset):
         img_buf = six.BytesIO()
         img_buf.write(binary_img)
         img_buf.seek(0)
-
-        return img_buf, label, img_path
+    
+        return img_buf, label, img_path # , img_dim
 
     def read_data(self, idx):
         img_buf, label, img_path = self.load_cache(idx)
@@ -170,20 +228,21 @@ class OCRDataset(Dataset):
         img = Image.open(img_buf).convert('RGB')
         if self.transform:
             img = self.transform(img)
-
+            # print(img[0], "and", img[1])
+            # print("------")
         resized_img = resize_img(img, self.img_height, self.img_width_min, self.img_width_max)
-
+        # print("resize img: ", resized_img.shape)
         return resized_img, sentence, img_path
 
     def write_data_to_disk(self):
         """Create LMDB dataset to save on disk."""
         with open(self.gt_path, mode='r', encoding='utf-8-sig') as f:
             lines = f.readlines()
-            annotations = [line.strip().split('\t') for line in lines]
+            annotations = [line.strip().split("\t") for line in lines]
         dataset_size = len(annotations)
         # print(dataset_size)
         # Create Environment for LMDB
-        env = lmdb.open(self.saved_path, map_size = 1024 * 1024 * 10000)
+        env = lmdb.open(self.saved_path, map_size = 1024 * 1024 * 10000)# 10000)
         cache = {}
         cnt = 0
         error = 0
@@ -235,7 +294,7 @@ class OCRDataset(Dataset):
             self.write_cache(env, cache)
             cache = {}
 
-        dataset_size = cnt - 1
+        dataset_size = cnt # Why - 1?
         cache['num-samples'] = str(dataset_size).encode()
         self.write_cache(env, cache)
 
@@ -246,11 +305,15 @@ class OCRDataset(Dataset):
         env.close()
 
     def __getitem__(self, idx):
-        img, sentence, img_path = self.read_data(idx)
+        img, sentence, rel_img_path = self.read_data(idx)
 
-        img_path = os.path.join(self.root_dir, img_path)
+        img_path = os.path.join(self.root_dir, rel_img_path)
 
-        sample = {'img': img, 'sentence': sentence, 'img_path': img_path}
+        sample = {'img': img, 
+                  'sentence': sentence, 
+                  'img_path': img_path, 
+                  "rel_img_path": rel_img_path,
+        }
         # print("|{}|".format(sentence))
         return sample
 
@@ -350,6 +413,7 @@ class Collator(object):
 
     def __call__(self, batch):
         img_path = []
+        rel_img_path = []
         tgt_input = []
         max_label_len = max(len(sample['sentence']) for sample in batch)
         resized_max_w = max(sample['img'].size[0] for sample in batch)
@@ -369,6 +433,7 @@ class Collator(object):
         
         for sample in batch:
             img_path.append(sample['img_path'])
+            rel_img_path.append(sample['rel_img_path'])
             sentence = sample['sentence']
 
             sentence_len = len(sentence)
@@ -386,6 +451,7 @@ class Collator(object):
             'img': image_tensors,
             'tgt_output': torch.LongTensor(tgt_input),
             'img_path': img_path,
+            'rel_img_path': rel_img_path,
             'target_lens': torch.IntTensor(target_lens),
         }
         # print("tgt_output shape: ", rs['tgt_output'].shape)
@@ -398,9 +464,9 @@ def test():
 
     vocab_builder = VocabBuilder(''.join(vocab))
     dataset_ = OCRDataset(
-        saved_path='test',
-        root_dir='/content/ocr/training_data/new_train',
-        gt_path='/content/ocr/train_gt.txt',
+        saved_path='/kaggle/working/composed_dataset/train_composed',
+        root_dir='/kaggle/input/kalapa-ocr-2023/KALAPA_ByteBattles_2023_OCR_Set1/OCR/training_data/training_data/images',
+        gt_path='/kaggle/input/kalapa-ocr-2023/train.txt',
         vocab_builder=vocab_builder,
         img_height=32,
         img_width_max=512,
@@ -408,7 +474,10 @@ def test():
         transform=None,
         max_readers=8
     )
-
+    """dataset_.concat_databases([
+        "/kaggle/working/datasets/train_v1",
+        "/kaggle/working/datasets/train_v2",
+    ])"""
     print(len(dataset_))
 
     # print(dataset_.clusters)
@@ -434,10 +503,8 @@ def test():
 
     for i, batch in enumerate(_dataloader):
         print(i, batch['img'].size())
+        break
 
 
 if __name__ == "__main__":
-    a = {-1: [1,1,1], 2: [2,2], -5:[2,-1,100,1111]}
-    a = collections.OrderedDict(sorted(a.items()))
-    for key, val in a.items():
-        print(key, val)
+    test()

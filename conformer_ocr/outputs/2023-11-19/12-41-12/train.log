@@ -1,0 +1,6 @@
+[2023-11-19 12:41:17,407][root][INFO] - It's running on multi-GPUs [0, 1]
+[2023-11-19 12:41:17,411][root][INFO] - Start training ...
+[2023-11-19 12:41:44,886][root][INFO] - Created 2430 samples in the dataset
+[2023-11-19 12:41:47,932][root][INFO] - Created 270 samples in the dataset
+[2023-11-19 12:41:53,838][root][INFO] - Created 540 samples in the dataset
+[2023-11-19 12:41:53,859][root][ERROR] - /kaggle/input/crnn-ctc-ckpt/authentic_last.pth not exists. Please verify this!

@@ -2,6 +2,16 @@ import numpy as np
 from nltk.metrics.distance import edit_distance
 from torchmetrics.functional.text import char_error_rate
 
+import Levenshtein 
+def calc_gain(preds, labels):
+    total_score = 0
+    for pred, label in zip(preds, labels):
+        d = Levenshtein.distance(pred, label)
+        score = max(0, 1 - 1.5**d/len(label))
+        total_score += score
+    mean_score = total_score/ len(labels)
+    return mean_score
+
 def metrics(ground_truth: list, predictions: list, type: str):
     """ Metrics to evaluate quality of OCR models.
 
@@ -57,5 +67,7 @@ def metrics(ground_truth: list, predictions: list, type: str):
         return norm_ed / len(ground_truth)
     elif type == "cer":
         return char_error_rate(predictions, ground_truth)
+    elif type == "neg_leven_dist":
+        return calc_gain(predictions, ground_truth)
     else:
         raise NotImplementedError('Other accuracy compute mode has not been implemented')

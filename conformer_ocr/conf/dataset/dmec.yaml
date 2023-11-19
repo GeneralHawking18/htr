@@ -1,23 +1,27 @@
 dataset:
     # name of your dataset
-    name: v6
-    train_annotation: /content/drive/MyDrive/HUST/ai_hackathon/ocr/htr/conformer_ocr/data/train.txt
-    valid_annotation: /content/drive/MyDrive/HUST/ai_hackathon/ocr/htr/conformer_ocr/data/val.txt
+    name: authentic
+    train_annotation: /kaggle/input/kalapa-ocr-2023/train.txt
+    valid_annotation: /kaggle/input/kalapa-ocr-2023/val.txt
+    test_annotation: /kaggle/input/kalapa-ocr-2023/test.txt
     # path to annotation and image
+    train_imgs_dir: /kaggle/input/vn-synthetic-ocr-dataset/images
+    valid_imgs_dir: /kaggle/input/vn-synthetic-ocr-dataset/images
+    test_imgs_dir: /kaggle/input/vn-synthetic-ocr-dataset/images
+    root_save_path: /kaggle/working/datasets
+    # /kaggle/working/
     unchanged:
-        root_dir: /content/ocr/training_data/new_train
         # resize image to 32 height, larger height will increase accuracy
-        img_height: 32
-        img_width_min: 32
-        img_width_max: 128 
+        img_height: 32 # [128, 2304]
+        img_width_min:  32 # 128 * 11
+        img_width_max:  512 # 128 * 16
         max_readers: 16
-    test_imgs_dir: /content/ocr/public_test_data/new_public_test
-    test_outputs: /content/drive/MyDrive/HUST/ai_hackathon/ocr/htr/conformer_ocr/outputs
-
+        
+    
 dataloader:
-    num_workers: 3
+    num_workers: 4
     pin_memory: True
 
 aug:
     image_aug: true
-    masked_language_model: false
+    masked_language_model: true

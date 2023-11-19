@@ -1,3 +1,4 @@
+scipy==1.10.0
 omegaconf
 hydra-core
 einops
@@ -10,3 +11,6 @@ git+https://github.com/parlance/ctcdecode.git
 lmdb
 timm
 torchmetrics
+scipy==1.10.0 
+evaluate
+torch-summary

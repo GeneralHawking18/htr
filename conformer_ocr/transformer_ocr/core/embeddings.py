@@ -44,6 +44,7 @@ class PositionalEncoding(nn.Module):
         if self.scale:
             x = x * math.sqrt(self.d_model)
         # print("input to positional embedding: ", x.shape)
+        # print(self.pe.shape)
         pos_emb = self.pe[:x.size(0), :]
         # print("pos_emb :",pos_emb.shape)
         if self.dropout_emb:
@@ -51,3 +52,12 @@ class PositionalEncoding(nn.Module):
         x = x + pos_emb
         x = self._dropout(x)
         return x
+    
+if __name__ == "__main__":
+    d_model = 768
+    pe = PositionalEncoding(
+        d_model = d_model,
+        max_len = 70,
+    )
+    tok_emb = torch.randn(70, 1, d_model)
+    print(pe(tok_emb).shape)

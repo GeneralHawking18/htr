@@ -1,0 +1,159 @@
+dataset:
+  dataset:
+    name: authentic
+    train_annotation: /kaggle/input/kalapa-ocr-2023/correctized_train.txt
+    valid_annotation: /kaggle/input/kalapa-ocr-2023/correctized_val.txt
+    test_annotation: /kaggle/input/kalapa-ocr-2023/test.txt
+    train_imgs_dir: /kaggle/input/kalapa-ocr-2023/KALAPA_ByteBattles_2023_OCR_Set1/OCR/training_data/training_data/images
+    valid_imgs_dir: /kaggle/input/kalapa-ocr-2023/KALAPA_ByteBattles_2023_OCR_Set1/OCR/training_data/training_data/images
+    test_imgs_dir: /kaggle/input/kalapa-ocr-2023/KALAPA_ByteBattles_2023_OCR_Set1/OCR/public_test/public_test/images
+    root_save_path: /kaggle/working/datasets
+    unchanged:
+      img_height: 32
+      img_width_min: 32
+      img_width_max: 512
+      max_readers: 16
+  dataloader:
+    num_workers: 2
+    pin_memory: true
+  aug:
+    image_aug: true
+    masked_language_model: true
+model:
+  vocab: ' ''/123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚÝàáâãèéêìíòóôõùúýĂăĐđĨĩŨũƠơƯưẠạẢảẤấẦầẨẩẪẫẬậẮắẰằẲẳẴẵẶặẸẹẺẻẼẽẾếỀềỂểỄễỆệỈỉỊịỌọỎỏỐốỒồỔổỖỗỘộỚớỜờỞởỠỡỢợỤụỦủỨứỪừỬửỮữỰựỲỳỴỵỶỷỸỹ'
+  device: cuda:0
+  batch_size: 96
+  cnn_model: convnextv2_femto
+  cnn_args:
+    pretrained: true
+    stride_pool:
+    - - 2
+      - 2
+    - - 2
+      - 2
+    - - 2
+      - 1
+    - - 2
+      - 1
+    - - 1
+      - 1
+    kernel_pool:
+    - - 2
+      - 2
+    - - 2
+      - 2
+    - - 2
+      - 1
+    - - 2
+      - 1
+    - - 1
+      - 1
+    hidden: 1024
+    dropout: 0.5
+  transformer_type: conformer
+  transformer_args:
+    max_seq_length: 85
+    n_layers: 1
+    scale: true
+    d_model: 384
+    n_head: 8
+    d_feedforward: 1536
+    emb_dropout: 0.0
+    pos_dropout: 0.1
+    ff_dropout: 0.1
+    conv_dropout: 0.1
+    attn_dropout: 0.1
+    activation: swish
+    layer_norm_eps: 1.0e-05
+    self_attn_type: abs_pos
+    half_step_residual: true
+    conv_kernel_size: 3
+    conv_expansion_factor: 2
+optimizer:
+  optimizer:
+    type: adam
+    lr: 0.03
+    betas:
+    - 0.9
+    - 0.98
+    eps: 1.0e-09
+    weight_decay: 0.01
+    lr_mul: 0.5
+    n_warm_steps: 25000
+    n_steps: 684 * 31
+  OneCycleLR:
+    _target_: torch.optim.lr_scheduler.OneCycleLR
+    pct_start: 0.001
+    max_lr: 0.001
+    div_factor: 5
+    three_phase: false
+  CyclicLR:
+    _target_: torch.optim.lr_scheduler.CyclicLR
+    base_lr: 4.0e-05
+    max_lr: 0.0001
+    base_momentum: 0.85
+    max_momentum: 0.95
+    scale_mode: iterations
+    mode: exp_range
+    gamma: 1 - 4e-4
+    step_size_up: 2
+    step_size_down: 98
+    cycle_momentum: false
+  ReduceLROnPlateau:
+    _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+    mode: min
+    factor: 0.2
+    verbose: true
+pl_params:
+  pl_trainer:
+    gpus:
+    - 0
+    - 1
+    max_epochs: 1000
+    max_steps: 100000
+    num_nodes: 100
+    accelerator: dp
+    accumulate_grad_batches: 1
+    checkpoint_callback: true
+    log_every_n_steps: 10
+    val_every_n_steps: 500
+    val_check_interval: 0.5
+    detect_anomaly: true
+    check_val_every_n_epoch: 1
+    precision: 32
+    sync_batchnorm: false
+    benchmark: false
+    gradient_clip_val: 1.0
+    gradient_clip_algorithm: value
+  loss_func:
+    blank: 0
+    reduction: sum
+    zero_infinity: true
+  ctc_smoothing: 0.1
+  max_norm: 5.0
+  ckpt_path: /kaggle/input/crnn-ctc-ckpt/authentic_last.pth
+  load_weights_only: false
+  use_beamsearch: true
+  predict: false
+  model_callbacks:
+    monitors:
+      max:
+      - seq_acc
+      - char_acc
+      - neg_leven_dist
+      min:
+      - cer
+    dirpath: /kaggle/working/ckpts
+    filename: dmec-{iter:02d}-{sentence accuracy:.2f}
+    save_top_k: 3
+    mode: max
+lm_models:
+  model_path: null
+  alpha: 0.0
+  beta: 0.0
+  cutoff_top_n: 40
+  cutoff_prob: 1.0
+  beam_width: 10
+  num_processes: 4
+  blank_id: 1
+  log_probs_input: false

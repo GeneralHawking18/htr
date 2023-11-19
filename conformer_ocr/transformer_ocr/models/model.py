@@ -1,21 +1,25 @@
 import os
 import io, zipfile
+import pandas as pd
+
 import time
 import numpy as np
 import torch
 import math
 import logging
+from pathlib import Path
 
-
-from torch.optim import Adam
+from torch.optim import Adam, AdamW
+from torch.optim.lr_scheduler import ReduceLROnPlateau, OneCycleLR
 from torch import nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset
 import torchvision.transforms as transforms
 from omegaconf import DictConfig, ListConfig
 from ctcdecode import CTCBeamDecoder
 from torchsummary import summary
 from tqdm import tqdm
+import hydra, yaml
 
 from transformer_ocr.core.optimizers import NaiveScheduler
 from transformer_ocr.utils.vocab import VocabBuilder
@@ -29,6 +33,60 @@ from transformer_ocr.utils.image_processing import resize_img
 from transformer_ocr.models.cnn_extraction.feature_extraction import FeatureExtraction
 from transformer_ocr.models.transformers.conformer import ConformerEncoder
 from transformer_ocr.models.transformers.tr_encoder import TransformerEncoder
+
+import warnings
+from torch.optim.lr_scheduler import _LRScheduler
+
+class NoamAnnealing(_LRScheduler):
+    def __init__(
+        self, optimizer, *, d_model, warmup_steps=None, warmup_ratio=None, max_steps=None, min_lr=0.0, last_epoch=-1
+    ):
+        self._normalize = d_model ** (-0.5)
+        assert not (
+            warmup_steps is not None and warmup_ratio is not None
+        ), "Either use particular number of step or ratio"
+        assert warmup_ratio is None or max_steps is not None, "If there is a ratio, there should be a total steps"
+
+        # It is necessary to assign all attributes *before* __init__,
+        # as class is wrapped by an inner class.
+        self.max_steps = max_steps
+        if warmup_steps is not None:
+            self.warmup_steps = warmup_steps
+        elif warmup_ratio is not None:
+            self.warmup_steps = int(warmup_ratio * max_steps)
+        else:
+            self.warmup_steps = 0
+
+        self.min_lr = min_lr
+        super().__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        if not self._get_lr_called_within_step:
+            warnings.warn(
+                "To get the last learning rate computed by the scheduler, please use `get_last_lr()`.", UserWarning
+            )
+
+        step = max(1, self.last_epoch)
+
+        for initial_lr in self.base_lrs:
+            if initial_lr < self.min_lr:
+                raise ValueError(
+                    f"{self} received an initial learning rate that was lower than the minimum learning rate."
+                )
+
+        new_lrs = [self._noam_annealing(initial_lr=initial_lr, step=step) for initial_lr in self.base_lrs]
+        return new_lrs
+
+    def _noam_annealing(self, initial_lr, step):
+        if self.warmup_steps > 0:
+            mult = self._normalize * min(step ** (-0.5), step * (self.warmup_steps ** (-1.5)))
+        else:
+            mult = self._normalize * step ** (-0.5)
+
+        out_lr = initial_lr * mult
+        if step > self.warmup_steps:
+            out_lr = max(out_lr, self.min_lr)
+        return out_lr
 
 
 class TransformerOCR(nn.Module):
@@ -66,6 +124,8 @@ class TransformerOCRCTC:
     def __init__(self, config: DictConfig):
         super(TransformerOCRCTC, self).__init__()
 
+        super(TransformerOCRCTC, self).__init__()
+
         self.config = config
         self.vocab = VocabBuilder(config.model.vocab)
         self.model = TransformerOCR(vocab_size=len(self.vocab),
@@ -73,9 +133,16 @@ class TransformerOCRCTC:
                                     cnn_args=config.model.cnn_args,
                                     transformer_type=config.model.transformer_type,
                                     transformer_args=config.model.transformer_args)
-        
         device = self.get_devices(self.config.pl_params.pl_trainer.gpus)
+        n_devices = 1 if isinstance(device, int) else len(device)
         print(device)
+        
+        # summary_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        summary(self.model, (
+            3, self.config.dataset.dataset.unchanged.img_height,
+            self.config.dataset.dataset.unchanged.img_width_max,
+        ), device = 'cuda')
+        
         if isinstance(device, int):
             logging.info("It's running on GPU {}".format(device))
             self.device = 'cuda:{}'.format(device)
@@ -84,49 +151,167 @@ class TransformerOCRCTC:
             logging.info("It's running on multi-GPUs {}".format(device))
             self.device = 'cuda:{}'.format(device[0])
             self.model = self.model.to('cuda:{}'.format(device[0]))
-            # self.model = nn.DataParallel(self.model, device_ids=device)
+            self.model = nn.DataParallel(self.model, device_ids=device)
         else:
             self.device = device
             self.model = self.model.to(self.device)
+        self.train_data = []
+        self.valid_data = []
+        self.test_data = []
+        # self.best_ckpt = ["", -float("inf")]
+        self.monitors = self.config.pl_params.model_callbacks.monitors
+        self.record = {}
+        for key in ["current"] + self.config.pl_params.model_callbacks.monitors.max + self.config.pl_params.model_callbacks.monitors.min:
+            if key != "current": key = "best_" + key
+            self.record[key] = {
+                'path': "",
+                "evaluation": {
+                    "loss": float("inf"),
+                    "seq_acc": 0.,
+                    "char_acc": 0.,
+                    "norm_edit_dist": 0.,
+                    "cer": float("inf"),
+                    "neg_leven_dist": 0., 
+                },
+                "epoch": 0,
+            }
 
-        summary_device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        summary(self.model, (3, 32, 128), device = summary_device)
+        
         self.batch_size = config.model.batch_size
+        
+        if not self.config.pl_params.predict:
+            logging.info("Start training ...")
+            if not os.path.exists(config.dataset.dataset.root_save_path):
+                os.mkdir(config.dataset.dataset.root_save_path)
+            self.train_data = self.train_dataloader()# self.train_dataloader()
+            self.valid_data = self.val_dataloader()
+            self.test_data = self.test_dataloader()#self.test_dataloader()
+            self.criterion = nn.CTCLoss(**self.config.pl_params.loss_func)
+            self.configure_optimizers()
+        
+        else:
+            logging.info("Start predicting ...")
+            # self.load_checkpoint(self.config.pl_params.pretrained)
+            self.test_data = self.test_dataloader()
 
         self.ctc_decoder = CTCBeamDecoder(
             self.vocab.get_vocab_tokens(),
             **self.config.lm_models
         )
-
-        if self.config.pl_params.pretrained:
-            if not os.path.exists(self.config.pl_params.pretrained):
-                logging.error('{} not exists. Please verify this!'.format(self.config.pl_params.pretrained))
+        
+        
+        if self.config.pl_params.ckpt_path:
+            if not os.path.exists(self.config.pl_params.ckpt_path):
+                logging.error('{} not exists. Please verify this!'.format(self.config.pl_params.ckpt_path))
                 exit(0)
-
-            logging.info("Start loading pre-trained weights from {}".format(self.config.pl_params.pretrained))
-            self.load_weights(self.config.pl_params.pretrained)
-
-        if not self.config.pl_params.predict:
-            self.optimizer = NaiveScheduler(Adam(self.model.parameters(),
-                                                 lr=config.optimizer.optimizer.lr,
-                                                 betas=tuple(config.optimizer.optimizer.betas),
-                                                 eps=config.optimizer.optimizer.eps), 2.0,
-                                            config.model.transformer_args.d_model,
-                                            config.optimizer.optimizer.n_warm_steps)
-
-            logging.info("Start training ...")
-            self.train_data = self.train_dataloader()
-            self.valid_data = self.val_dataloader()
-
-            self.criterion = nn.CTCLoss(**self.config.pl_params.loss_func)
-        # else:
             
-            
-            self.test_data = self.test_dataloader()
-            
+            if self.config.pl_params.load_weights_only:
+                logging.info("Start loading pretrained weights from {}".format(self.config.pl_params.ckpt_path))
+                self.load_weights(self.config.pl_params.ckpt_path)
+            else:
+                logging.info("Start loading checkpoint from {}".format(self.config.pl_params.ckpt_path))
+                self.load_checkpoint(self.config.pl_params.ckpt_path)
+        
+    
+        
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
+    
+    def configure_optimizers(self):
+        self.optimizer = AdamW(self.model.parameters(),
+                             lr=self.config.optimizer.optimizer.lr,
+                             betas=tuple(self.config.optimizer.optimizer.betas),
+                             eps=self.config.optimizer.optimizer.eps)
+        """self.lr_scheduler = NaiveScheduler(self.optimizer,
+                                        config.optimizer.optimizer.lr_mul,
+                                        config.model.transformer_args.d_model,
+                                        config.optimizer.optimizer.n_warm_steps,
+                                        eval(config.optimizer.optimizer.n_steps))"""
+
+        """self.optimizer.param_groups[0]['initial_lr'] = 6.59e-05
+        self.optimizer.param_groups[0]['max_lr'] = 1e-3
+        self.optimizer.param_groups[0]['min_lr'] = 1e-7
+        self.optimizer.param_groups[0]['base_momentum '] = 0.85
+        self.optimizer.param_groups[0]['max_momentum '] = 0.95"""
+
+
+        """self.lr_scheduler = ReduceLROnPlateau(
+            self.optimizer, 
+            mode = 'min',
+            min_lr = 1e-6,
+            patience = 3,
+            verbose = True,
+        )"""
+        
+        step_per_epoch = len(self.train_data)#  if hasattr(self, 'train_data') else 0:
+        """self.lr_scheduler = OneCycleLR(
+            self.optimizer,
+            epochs = self.config.pl_params.pl_trainer.max_epochs,
+            steps_per_epoch = len(self.train_data),
+            pct_start = config.optimizer.lr_scheduler.pct_start,
+            max_lr = config.optimizer.lr_scheduler.max_lr,
+            # div_factor = config.optimizer.lr_scheduler.div_factor,
+            # final_div_factor = config.optimizer.lr_scheduler.final_div_factor,
+            # three_phase = config.optimizer.lr_scheduler.three_phase,
+            # last_epoch = 32 * int(87550/self.batch_size), 
+        )"""
+        
+        self.lr_scheduler = hydra.utils.instantiate(
+            self.config.optimizer.OneCycleLR,
+            optimizer = self.optimizer,
+            epochs = self.config.pl_params.pl_trainer.max_epochs,
+            steps_per_epoch = len(self.train_data),
+        )
+        """self.lr_scheduler = hydra.utils.instantiate(
+            config.optimizer.ReduceLROnPlateau,
+            optimizer = self.optimizer,
+        )"""
+        """self.lr_scheduler = hydra.utils.instantiate(
+            config.optimizer.CyclicLR,
+            _paritial_ = True,
+            optimizer = self.optimizer,
+            base_lr = config.optimizer.CyclicLR.base_lr,
+            max_lr= config.optimizer.CyclicLR.max_lr,
+            base_momentum = config.optimizer.CyclicLR.base_momentum,
+            max_momentum  = config.optimizer.CyclicLR.max_momentum,
+            step_size_up = config.optimizer.CyclicLR.epoch_size_up * len(self.train_data),
+            step_size_down = config.optimizer.CyclicLR.epoch_size_down * len(self.train_data),
+            scale_mode = config.optimizer.CyclicLR.scale_mode,
+            mode = config.optimizer.CyclicLR.mode,
+            gamma = config.optimizer.CyclicLR.gamma,
+            cycle_momentum = config.optimizer.CyclicLR.cycle_momentum,
+        )"""
+        
+        """self.lr_scheduler = NoamAnnealing(
+            self.optimizer,
+            d_model = 512,
+            warmup_steps = step_per_epoch * 1,
+        )"""
+        """self.lr_scheduler = hydra.utils.instantiate(
+            config.optimizer.CyclicLR,
+            optimizer = self.optimizer,
+            step_size_up = config.optimizer.CyclicLR.step_size_up * len(self.train_data),
+            step_size_down = config.optimizer.CyclicLR.step_size_down * len(self.train_data),
+            gamma= 1 - 4e-4,
+        )"""
+        
+        
+
+        """self.lr_scheduler = torch.optim.lr_scheduler.CyclicLR(
+            self.optimizer, 
+            base_lr = 6e-8,
+            max_lr= 9e-05,
+            base_momentum = 0.85,
+            max_momentum  = 0.95,
+            step_size_up = 683 * 1,
+            step_size_down = 683 * 40,
+            scale_mode = "iterations",
+            mode = "exp_range",
+            gamma = 1 - 1e-4,
+            cycle_momentum = False,
+        )"""
+        
 
     def training_step(self, batch, step):
         img = batch['img'].cuda(non_blocking=True, device=self.device)
@@ -135,6 +320,7 @@ class TransformerOCRCTC:
         
         #a = self.convert_to_string(tgt_output[0], tgt_output.shape[0])
         # print("string and gt num", a, tgt_output[0])
+    
         outputs = self.model(img)
         # print("outputs prob shape: ", outputs.shape)
         
@@ -155,14 +341,15 @@ class TransformerOCRCTC:
 
         # Accumulation gradiant training
         loss = loss / self.config.pl_params.pl_trainer.accumulate_grad_batches
-
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.pl_params.max_norm)
-
         if (step + 1) % self.config.pl_params.pl_trainer.accumulate_grad_batches == 0:
-            self.optimizer.step_and_update_lr()
+            # self.optimizer.step_and_update_lr()
+            self.optimizer.step()
+            self.lr_scheduler.step()
+            # print(step)
             self.optimizer.zero_grad()
-
+        
         return loss
 
     def train(self):
@@ -173,90 +360,89 @@ class TransformerOCRCTC:
         start_step: int = 0
         total_data_size = 0
         data_iter = iter(self.train_data)
-        self.model.zero_grad()
+        self.model.train()
 
-        self.best_ckpt = ("", float("inf"))
+        
+        while self.record['current']['epoch'] < self.config.pl_params.pl_trainer.max_epochs:
+            self.record['current']['epoch'] += 1
+            if self.config.dataset.dataset.name=="synthetic" and self.record['current']['epoch']>200:
+                break
+            for i, batch in enumerate(
+                (train_tqdm:= tqdm(
+                    self.train_data, 
+                    desc = f"Epoch {self.record['current']['epoch']}-training: ",
+                    ncols=100,
+                    leave=True,
+                    position=0,
+                ))
+            ):
+                self.model.train()
+                loss = self.training_step(batch=batch, step=(self.record['current']['epoch']-1) * len(self.train_data) + i)
+                train_tqdm.set_postfix({
+                    'loss': round(loss.item(), 4),
+                    "lr":  self.optimizer.param_groups[0]['lr'] # self.lr_scheduler.get_last_lr(), #
 
-        for epoch in range(0, self.config.pl_params.pl_trainer.max_epochs):
-            for i, batch in enumerate((train_tqdm:= tqdm(self.train_data, desc = f"Epoch {epoch} - training: "))):
-                
-                """ for i in range(self.config.pl_params.pl_trainer.max_steps):
-                start_step += 1
-                start_time = time.time()
-                i += 1
-                try:
-                    batch = next(data_iter)
-                except StopIteration:
-                    data_iter = iter(self.train_data)
-                    batch = next(data_iter)
-
-                total_loader_time += time.time() - start_time
-                start_time = time.time() """
-
-                loss = self.training_step(batch=batch, step=i)
-                train_tqdm.set_postfix({'step_loss': round(loss.item(), 4)})
-                # total_gpu_time += time.time() - start_time
-
+                })
                 total_loss += loss.item()
                 total_data_size += batch['img'].shape[0]
-
-                """if start_step % self.config.pl_params.pl_trainer.log_every_n_steps == 0:
-                    info = 'iter: {:06d} - train loss: {:.3f} - lr: {:.2e} - load time: {:.2f} - gpu time: {:.2f}'.format(
-                        start_step,
-                        total_loss / self.config.pl_params.pl_trainer.log_every_n_steps,
-                        self.optimizer.get_optimizer().param_groups[0]['lr'],
-                        total_loader_time,
-                        total_gpu_time)
                 
-                if start_step % self.config.pl_params.pl_trainer.log_every_n_steps == 0:
-                    info = 'iter: {:06d} - train loss: {:.3f} - lr: {:.2e} - load time: {:.2f} - gpu time: {:.2f}'.format(
-                        start_step,
-                        total_loss / self.config.pl_params.pl_trainer.log_every_n_steps,
-                        self.optimizer.get_optimizer().param_groups[0]['lr'],
-                        total_loader_time,
-                        total_gpu_time)"""
-                    # reset
             info = 'Epoch {}: train loss: {:.3f} - lr: {:.2e}'.format(
-                epoch,
+                self.record['current']['epoch'],
                 total_loss / len(self.train_data),
-                self.optimizer.get_optimizer().param_groups[0]['lr'],
+                self.optimizer.param_groups[0]['lr'], #  self.lr_scheduler.get_last_lr()[0],
             )
-            # total_loader_time = 0
-            # total_gpu_time = 0
-            
-            logging.info(info)
-            
-            total_loss = 0
-            # total_data_size = 0
-            val_info = self.validation()
 
-            """if start_step % self.config.pl_params.pl_trainer.val_every_n_steps == 0:
-                val_info = self.validation()
-            """
-            if val_info['cer'] < self.best_ckpt[1]:
-                saved_ckpt = os.path.join(
-                    self.config.pl_params.model_callbacks.dirpath,
-                    "{}_{}_{}.pth".format(
-                        self.model.__class__.__name__, 
-                        epoch, 
-                        round(val_info['cer'], 4),
-                    ) 
+            logging.info(info)
+            total_loss = 0
+            val_info = self.validation()
+            
+            """saved_ckpt = f"{self.config.pl_params.model_callbacks.dirpath}/best_ckpt_{self.record['current']['epoch']}.pth"
                     # self.config.pl_params.model_callbacks.filename.format()
-                )
-                self.save_weights(saved_ckpt)
-                self.best_ckpt = (saved_ckpt, val_info['cer'])
+            self.export_submission()
+            self.save_checkpoint(saved_ckpt)"""
+            
+            for mode in self.monitors:
+                # inc = (mode == "max")
+                for metrics in self.monitors[mode]:
+                    if mode == "max":
+                        better = (val_info[metrics] >= self.record[f"best_{metrics}"]['evaluation'][metrics])
+                    else:
+                        better = (val_info[metrics] <= self.record[f"best_{metrics}"]['evaluation'][metrics])
+ 
+                    if better:
+                        # The same sign with inc "increase"
+                        saved_ckpt_path = f"{self.config.pl_params.model_callbacks.dirpath}/{self.config.dataset.dataset.name}_best_{metrics}.pth"
+                        self.save_record(f"best_{metrics}", saved_ckpt_path, val_info, self.record['current']['epoch'])
+                        self.save_checkpoint(saved_ckpt_path)
+                    logging.info(f"Current best {metrics}: ")
+                    logging.info(self.record[f"best_{metrics}"])
+                    logging.info("-----------------------------------------------")
+
+            last_saved_ckpt_path = f"{self.config.pl_params.model_callbacks.dirpath}/{self.config.dataset.dataset.name}_last.pth"
+            self.save_record("current", last_saved_ckpt_path, val_info, self.record['current']['epoch'])
+            self.save_checkpoint(last_saved_ckpt_path)
+            
+    def save_record(self, metrics, saved_ckpt_path, val_info, epoch):
+        self.record[metrics]['path'] = saved_ckpt_path
+        self.record[metrics]['evaluation'] = val_info
+        self.record[metrics]['epoch'] = epoch
 
     def validation(self):
         self.model.eval()
         losses = np.array([])
         pred_sents = []
         actual_sents = []
-
+        num_samples = 0
+        
         with torch.no_grad():
             for step, batch in enumerate(self.valid_data):
+                if step > 100:
+                    break
                 valid_dict = self.validation_step(batch=batch)
 
                 losses = np.append(losses, valid_dict['loss'].cpu().detach().numpy())
+                num_samples += len(batch)
+                
                 actual_sents.extend(self.vocab.batch_decode(valid_dict['tgt_output'].tolist()))
 
                 if self.config.pl_params.use_beamsearch:
@@ -269,28 +455,34 @@ class TransformerOCRCTC:
                 else:
                     logits = valid_dict['logits'].cpu().detach().numpy()
                     pred_sents.extend([self._greedy_decode(logits[i]) for i in range(logits.shape[0])])
+                
 
         avg_sent_acc = metrics(actual_sents, pred_sents, type='accuracy')
         acc_per_char = metrics(actual_sents, pred_sents, type='char_acc')
         normalized_ed = metrics(actual_sents, pred_sents, type='normalized_ed')
         cer = metrics(actual_sents, pred_sents, type='cer')
+        neg_leven_dist = metrics(actual_sents, pred_sents, type='neg_leven_dist')
         """for i in range(len(pred_sents)):
             if pred_sents[i] != actual_sents[i]:
-                print('Actual_sent: {}, pred_sent: {}'.format(actual_sents[i], pred_sents[i]))"""
+                logging.info('Actual_sent: {}, pred_sent: {}'.format(actual_sents[i], pred_sents[i]))
+        """
+        val_info = {"loss": losses.mean().item(),
+                    "seq_acc": avg_sent_acc * 100,
+                    "char_acc": acc_per_char.item() * 100,
+                    "norm_edit_dist": normalized_ed * 100,
+                    "cer": cer.item(),
+                    "neg_leven_dist": neg_leven_dist * 100,  
+                   }
+        # self.lr_scheduler.step(neg_leven_dist)
+        logging.info(f"\nCurrent: \n{yaml.dump(val_info, default_flow_style=False)}")
+        logging.info("--------------------------------------------")
+        # logging.info(val_info)
 
-        val_info = {"loss": losses.mean(),
-                    "word accuracy": avg_sent_acc * 100,
-                    "character accuracy": acc_per_char * 100,
-                    "normalized edit distance": normalized_ed * 100,
-                    "cer": cer.item()}
-
-        logging.info(val_info)
-
-        self.model.train()
         return val_info
 
     def validation_step(self, batch):
         img = batch['img'].cuda(non_blocking=True, device=self.device)
+
         tgt_output = batch['tgt_output'].cuda(non_blocking=True, device=self.device)
 
         logits = self.model(img)
@@ -300,13 +492,44 @@ class TransformerOCRCTC:
         length = batch['target_lens']
         preds_size = torch.tensor([outputs.size(0)] * outputs.size(1), device=outputs.device).long()
         loss = self.criterion(outputs, tgt_output, preds_size, length) / outputs.size(1)
-
+        
+        
+        
         return {
             'loss': loss,
             'logits': logits,
             'tgt_output': tgt_output
         }
+    
+    
+    
+    
+    def infer(self, batch):
+        imgs_name = batch['rel_img_path']
+        imgs = batch['img']
+        imgs = imgs.cuda(non_blocking=True, device=self.device)
 
+        logits = self.model(imgs)
+        self.model.eval()
+        logits = F.log_softmax(logits, dim=2)
+        pred_sents = []
+        confidences = []
+        
+        if self.config.pl_params.use_beamsearch:
+            beam_results, beam_scores, timesteps, out_lens = self.ctc_decoder.decode(
+                logits.softmax(2))
+            beam_scores = 1/torch.exp(beam_scores)
+            
+            for i in range(beam_results.size(0)):
+                pred_sent = self.convert_to_string(beam_results[i][0], out_lens[i][0])
+                pred_sents.append(pred_sent.replace('<pad>', ''))
+                confidences.append(beam_scores[i][0].item())
+        else:
+            logits = logits.cpu().detach().numpy()
+            pred_sents.extend([self._greedy_decode(logits[i]) for i in range(logits.shape[0])])
+    
+        return imgs_name, pred_sents, confidences
+    
     def predict(self, img):
         resized_img = resize_img(img, self.config.dataset.dataset.unchanged.img_height,
                                  self.config.dataset.dataset.unchanged.img_width_min,
@@ -327,38 +550,37 @@ class TransformerOCRCTC:
 
         return pred_sent
     
-    def export_submission(self):
+    def export_submission(self, save_dir = "."):
         logging.info('Start predicting ...')
         # Load the best weight to submit
-        self.load_weights(self.best_ckpt[0])
-
+        """if self.best_ckpt[0] != "":
+            self.load_weights(self.best_ckpt[0])"""
+        self.model.eval()
         model_name = self.model.__class__.__name__
-        best_cer_val = round(self.best_ckpt[1], 4)
-        file_zip_path = f"./outputs/{model_name}_{best_cer_val}.zip"
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED, False) as zip_file:
-            data = io.BytesIO()
-
-            for batch in tqdm(self.test_data, desc = "Testing: "):
-                self.model.eval()
-                img_names, imgs = batch
-                preds = []
-                for img in imgs:
-                    pred = self.predict(img)
-                    preds.append(pred)
-
-                for img_name, pred in zip(img_names, preds):
-                    if pred == "":
-                        pred = "a"
-                    line = bytes(f"{img_name} {pred}\n", "utf=8")
-                    data.write(line)
-
-            zip_file.writestr("submission.txt", data.getvalue())
-
-        # Store file
-        with open(file_zip_path, 'wb') as f:
-            f.write(zip_buffer.getvalue())
         
+        # best_cer_val = round(self.best_ckpt[1], 4)
+        
+        # save_folder_path = os.getcwd() + "/outputs"
+        """if not os.path.exists(save_folder_path):
+            os.makedirs(save_folder_path)"""
+        
+        # Nó tự động lưu trong outputs mà hydra cài sẵn, nên không cần phải makedir
+        submission_csv_file = f"{save_dir}/{model_name}_{self.record['current']['epoch']}.csv"# f"{model_name}_{best_cer_val}.zip"
+        submission_dict = {
+            "id": [],
+            "answer": [],
+            # "confidences": [],
+        }
+
+        for batch in tqdm(self.test_data, desc = "Testing: "):
+            img_names, preds, confidences = self.infer(batch)
+            submission_dict['id'].extend(img_names)
+            submission_dict['answer'].extend(preds)
+            # submission_dict['confidences'].extend(confidences)
+                
+        df = pd.DataFrame(submission_dict)
+        df.set_index("id", inplace = True)
+        df.to_csv(submission_csv_file)
         
     @property
     def transform(self):
@@ -368,49 +590,96 @@ class TransformerOCRCTC:
         return ImgAugTransform()
 
     def train_dataloader(self) -> DataLoader:
-        _dataloader = self._prepare_data('train_{}'.format(self.config.dataset.dataset.name),
-                                         self.config.dataset.dataset.train_annotation, True)
+        _dataloader = self._prepare_dataloader(
+            saved_path = '{}/train_{}'.format(
+                self.config.dataset.dataset.root_save_path,
+                self.config.dataset.dataset.name,
+            ),
+            gt_path = self.config.dataset.dataset.train_annotation,
+            imgs_path = self.config.dataset.dataset.train_imgs_dir,
+            use_transform = True,
+            shuffle = False,
+        )
 
         return _dataloader
 
     def val_dataloader(self) -> DataLoader:
-        _dataloader = self._prepare_data('valid_{}'.format(self.config.dataset.dataset.name),
-                                         self.config.dataset.dataset.valid_annotation, False)
-
+        _dataloader = self._prepare_dataloader(
+            saved_path = '{}/valid_{}'.format(
+                self.config.dataset.dataset.root_save_path,
+                self.config.dataset.dataset.name,
+            ),
+            gt_path = self.config.dataset.dataset.valid_annotation,
+            imgs_path = self.config.dataset.dataset.valid_imgs_dir,
+            use_transform = False,
+            shuffle = False,
+        )
         return _dataloader
-
+    
     def test_dataloader(self) -> DataLoader:
-        dataset = Test_OCRDataset(
+        _dataloader = self._prepare_dataloader(
+            saved_path = '{}/test_{}'.format(
+                self.config.dataset.dataset.root_save_path,
+                self.config.dataset.dataset.name,
+            ),
+            gt_path = self.config.dataset.dataset.test_annotation,
+            imgs_path = self.config.dataset.dataset.test_imgs_dir,
+            use_transform = False,
+            shuffle = False,
+        )
+        return _dataloader 
+    
+    def predict_dataloader(self) -> DataLoader:
+        _dataset = Test_OCRDataset(
             test_imgs_dir = self.config.dataset.dataset.test_imgs_dir,
             transform = self.transform,            
         )
         _dataloader = DataLoader(
-            dataset,
+            _dataset,
             batch_size = self.batch_size,
             collate_fn = Test_OCRDataset.collate_fn,
+            use_transform = False,
             shuffle = False,
         )
         return _dataloader
-
-    def _prepare_data(self, saved_path: str, data_path: str, use_transform: bool = True) -> DataLoader:
+    def _prepare_dataset(self, saved_path: str, gt_path: str, imgs_path, 
+                      use_transform: bool = True,
+                      drop_last = False, shuffle = False) -> DataLoader:
         if not use_transform:
             transform = None
         else:
             transform = self.transform
 
-        dataset = OCRDataset(saved_path=saved_path,
-                             gt_path=data_path,
+        _dataset = OCRDataset(saved_path=saved_path,
+                             gt_path=gt_path,
+                             root_dir = imgs_path,
                              vocab_builder=self.vocab,
                              transform=transform,
                              **self.config.dataset.dataset.unchanged)
+        return _dataset
+    
+    def _prepare_dataloader(
+        self, saved_path: str, gt_path: str, imgs_path, 
+        use_transform: bool = True,
+        drop_last = False, shuffle = False,
+    ) -> DataLoader:
+        _dataset = self._prepare_dataset(
+            saved_path = saved_path,
+            gt_path = gt_path,
+            imgs_path = imgs_path,
+            use_transform = use_transform,
+            shuffle = shuffle,
+        )
 
         _dataloader = DataLoader(
-            dataset,
+            _dataset,
             batch_size=self.batch_size,
-            sampler=ClusterRandomSampler(dataset, self.batch_size),
-            collate_fn=Collator(),
-            shuffle=False,
-            drop_last=False,
+            sampler=ClusterRandomSampler(_dataset, self.batch_size),
+            collate_fn=Collator(
+                img_h = self.config.dataset.dataset.unchanged.img_height,
+            ),
+            shuffle = shuffle,
+            drop_last = drop_last,
             **self.config.dataset.dataloader)
 
         return _dataloader
@@ -435,33 +704,46 @@ class TransformerOCRCTC:
     def save_weights(self, filename):
         dir = os.path.dirname(filename)
         os.makedirs(dir, exist_ok=True)
-
         torch.save(self.model.state_dict(), filename)
-
+        
     def convert_to_string(self, tokens, seq_len):
         return "".join([self.vocab.get_vocab_tokens()[x] for x in tokens[0:seq_len]])
 
     def load_weights(self, filename):
-        state_dict = torch.load(filename, map_location=torch.device(self.device))
+        checkpoint = torch.load(filename, map_location=torch.device(self.device))
+        print(checkpoint.keys())
+        if not self.config.pl_params.predict:
+            del checkpoint["state_dict"]["module.transformer.fc.weight"]
+            del checkpoint["state_dict"]["module.transformer.fc.bias"]
+        self.model.load_state_dict(checkpoint['state_dict'], strict = False)
+        # self.model.load_state_dict(state_dict, strict=True)
+        
+    def load_checkpoint(self, filename):
+        checkpoint = torch.load(filename)
+        self.optimizer.load_state_dict(checkpoint['optimizer'])
+        self.lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+        self.model.load_state_dict(checkpoint['state_dict'])
+        
+        if "record" in checkpoint:
+            self.record = checkpoint['record']
+        if "epoch" in checkpoint:
+            self.record['current']['epoch'] = checkpoint['epoch']
+        # self.iter = checkpoint['iter']
+        # self.train_losses = checkpoint['train_losses']
 
-        # Multi-gpus
-        new_state_dict = {}
-        for name, param in state_dict.items():
-            if name.startswith('module'):
-                name = name[7:]
+    def save_checkpoint(self, filename):
+        state = {
+            # 'iter': self.iter, 
+            'state_dict': self.model.state_dict(),
+            'optimizer': self.optimizer.state_dict(), 
+            "lr_scheduler": self.lr_scheduler.state_dict(),
+            "record": self.record,
+        }
+        
+        path, _ = os.path.split(filename)
+        os.makedirs(path, exist_ok=True)
 
-            new_state_dict[name] = param
-
-        for name, param in self.model.named_parameters():
-            if name not in new_state_dict:
-                logging.warning('{} not found'.format(name))
-            elif new_state_dict[name].shape != param.shape:
-                logging.warning(
-                    '{} miss-matching shape, required {} but found {}'.format(name, param.shape,
-                                                                              new_state_dict[name].shape))
-                del new_state_dict[name]
-
-        self.model.load_state_dict(new_state_dict, strict=True)
+        torch.save(state, filename)
 
     @staticmethod
     def kldiv_lsm_ctc(logits: torch.Tensor, ylens: torch.Tensor) -> torch.Tensor:
